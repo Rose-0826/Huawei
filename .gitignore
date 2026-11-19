@@ -1,0 +1,20 @@
+# 码道工程元数据（不提交）
+.codeartsdoer/
+.arts/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# 密钥（绝不提交）
+.env
+*.key
+config.local.py
+
+# 大文件
+video/*.mp4
+video/*.mov
+video/*.avi

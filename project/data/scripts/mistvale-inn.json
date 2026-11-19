@@ -1,0 +1,257 @@
+{
+  "id": "mistvale-inn",
+  "title": "雾镇旅馆",
+  "version": "1.0",
+  "era": "1937 年冬",
+  "opening": "暴雪封山第三天。雾镇旅馆的老板陈守义，被发现死在二楼书房，后脑一处钝器伤。雪没有停，路通不了，五个人都还在楼里。",
+  "victim": {
+    "id": "v0",
+    "name": "陈守义",
+    "desc": "旅馆老板，五十岁，死在二楼书房，后脑遭钝器击打，死亡时间推定在 22:40 至 23:10 之间。"
+  },
+  "culprit": "r1",
+  "solution_path": ["f05", "f06", "f08", "f15", "f16"],
+  "roles": [
+    {
+      "id": "r1",
+      "name": "沈玉兰",
+      "public": "老板娘，四十二岁，掌管内宅与账目",
+      "secret": "三年前那场火是她忘了吹灭油灯引起的，前老板娘因此丧命",
+      "goal": "让所有人相信火灾是意外，并且相信她 22:45 就离开了书房",
+      "lie_propensity": 0.85,
+      "alibi": "我二十二点四十五就出来了，之后一直在自己房里。",
+      "relations": {
+        "r2": { "type": "主雇", "trust": 0.5 },
+        "r3": { "type": "主雇", "trust": 0.4 },
+        "r5": { "type": "有恩于他", "trust": 0.8 }
+      }
+    },
+    {
+      "id": "r2",
+      "name": "周砚青",
+      "public": "账房先生，三十八岁，寡言",
+      "secret": "挪用旅馆银钱三百大洋填补赌债",
+      "goal": "别让人查账，也别让人知道他当晚去过二楼",
+      "lie_propensity": 0.6,
+      "alibi": "我在账房对账，一晚上没出去。",
+      "relations": {
+        "r1": { "type": "主雇", "trust": 0.5 },
+        "r4": { "type": "同乡", "trust": 0.6 }
+      }
+    },
+    {
+      "id": "r3",
+      "name": "阿蘅",
+      "public": "女佣，十九岁，本地人，在旅馆做工三年",
+      "secret": "她是陈守义与前妻的私生女，一直没被认",
+      "goal": "保住这份工，不想卷进任何事",
+      "lie_propensity": 0.3,
+      "alibi": "我送完炭就下楼了，什么也没看见。",
+      "relations": {
+        "r1": { "type": "主雇", "trust": 0.3 },
+        "r5": { "type": "长辈", "trust": 0.7 }
+      }
+    },
+    {
+      "id": "r4",
+      "name": "陆明川",
+      "public": "旅客，三十岁，自称跑药材生意",
+      "secret": "他其实是记者，此行专为查三年前那场火",
+      "goal": "拿到能坐实火灾真相的证据，把稿子发出去",
+      "lie_propensity": 0.5,
+      "alibi": "我一直在房里写东西，听见楼上有响动。",
+      "relations": {
+        "r1": { "type": "怀疑", "trust": 0.1 },
+        "r2": { "type": "同乡", "trust": 0.6 }
+      }
+    },
+    {
+      "id": "r5",
+      "name": "老韩",
+      "public": "马夫，五十五岁，在这家旅馆二十年",
+      "secret": "他亲眼看见沈玉兰从书房出来，但收了一包银元",
+      "goal": "拿钱闭嘴，别把自己搭进去",
+      "lie_propensity": 0.4,
+      "alibi": "我在马厩，快十一点半才上楼送热水，一推门就看见老板躺在那儿。",
+      "relations": {
+        "r1": { "type": "欠人情", "trust": 0.8 },
+        "r3": { "type": "当自家孩子", "trust": 0.7 }
+      }
+    }
+  ],
+  "facts": [
+    {
+      "id": "f01",
+      "text": "22:15，陈守义让阿蘅去叫沈玉兰到书房，说有话要谈",
+      "topic": ["time", "event"],
+      "holders": ["r3"],
+      "sensitivity": 0.2
+    },
+    {
+      "id": "f02",
+      "text": "22:30 前后，书房里传出争吵声，两个人的声音都很大",
+      "topic": ["time", "event"],
+      "holders": ["r2", "r3"],
+      "sensitivity": 0.5
+    },
+    {
+      "id": "f03",
+      "text": "争吵大约在 22:45 就停了",
+      "topic": ["time"],
+      "holders": ["r2"],
+      "sensitivity": 0.4,
+      "belief": { "r2": "那场争吵一直闹到 23:10 才停，我记得很清楚" },
+      "source_of_error": "r1"
+    },
+    {
+      "id": "f04",
+      "text": "22:50，沈玉兰抓起壁炉边的拨火棍，从背后打了陈守义",
+      "topic": ["weapon", "event"],
+      "holders": ["r1"],
+      "sensitivity": 1.0
+    },
+    {
+      "id": "f05",
+      "text": "23:00，阿蘅上楼送炭，看见沈玉兰从书房出来，右袖沾着灰",
+      "topic": ["time", "event"],
+      "holders": ["r3"],
+      "sensitivity": 0.55
+    },
+    {
+      "id": "f06",
+      "text": "23:05，周砚青在楼梯口碰见沈玉兰，她把手帕攥得死紧",
+      "topic": ["time", "event"],
+      "holders": ["r1", "r2"],
+      "sensitivity": 0.45
+    },
+    {
+      "id": "f07",
+      "text": "书房壁炉边本该有两根拨火棍，现在只剩一根",
+      "topic": ["weapon"],
+      "holders": ["r3"],
+      "sensitivity": 0.2
+    },
+    {
+      "id": "f08",
+      "text": "那根拨火棍被扔进了后院的雪堆，是沈玉兰扔的",
+      "topic": ["weapon"],
+      "holders": ["r1"],
+      "sensitivity": 0.95
+    },
+    {
+      "id": "f09",
+      "text": "23:20，陆明川在二楼听见一声闷响，像重物倒在地上",
+      "topic": ["time", "event"],
+      "holders": ["r4"],
+      "sensitivity": 0.15
+    },
+    {
+      "id": "f10",
+      "text": "23:30，老韩端热水进书房，发现陈守义已经死了",
+      "topic": ["time", "event"],
+      "holders": ["r5"],
+      "sensitivity": 0.35
+    },
+    {
+      "id": "f11",
+      "text": "23:35，沈玉兰塞给老韩一包银元，让他咬死说整晚没上过二楼",
+      "topic": ["event"],
+      "holders": ["r1", "r5"],
+      "sensitivity": 0.9
+    },
+    {
+      "id": "f12",
+      "text": "周砚青挪用了旅馆三百大洋去填赌债",
+      "topic": ["motive"],
+      "holders": ["r2"],
+      "sensitivity": 0.85
+    },
+    {
+      "id": "f13",
+      "text": "陈守义三天前说过，过完年要清一次账",
+      "topic": ["motive"],
+      "holders": ["r1", "r2"],
+      "sensitivity": 0.6
+    },
+    {
+      "id": "f14",
+      "text": "三年前旅馆西厢失火，陈守义的前妻被烧死在里头",
+      "topic": ["event"],
+      "holders": ["r1", "r2", "r4", "r5"],
+      "sensitivity": 0.2
+    },
+    {
+      "id": "f15",
+      "text": "那场火是油灯没吹灭引起的，吹灯的人是沈玉兰",
+      "topic": ["motive", "event"],
+      "holders": ["r1"],
+      "sensitivity": 0.95
+    },
+    {
+      "id": "f16",
+      "text": "陆明川手里有火灾当夜的客栈登记簿，能证明沈玉兰那晚根本不在自己房里",
+      "topic": ["motive", "event"],
+      "holders": ["r4"],
+      "sensitivity": 0.7
+    },
+    {
+      "id": "f17",
+      "text": "陆明川其实是记者，此行就是为了查三年前那场火",
+      "topic": ["relation"],
+      "holders": ["r4"],
+      "sensitivity": 0.75
+    },
+    {
+      "id": "f18",
+      "text": "阿蘅是陈守义和前妻的私生女，旅馆里只有沈玉兰和阿蘅自己知道",
+      "topic": ["relation"],
+      "holders": ["r1", "r3"],
+      "sensitivity": 0.7
+    },
+    {
+      "id": "f19",
+      "text": "半月前阿蘅向陈守义讨一个名分，被当众回绝了",
+      "topic": ["motive"],
+      "holders": ["r3", "r5"],
+      "sensitivity": 0.6
+    },
+    {
+      "id": "f20",
+      "text": "老韩欠沈玉兰一个人情：三年前她替他瞒下了偷卖马料的事",
+      "topic": ["relation"],
+      "holders": ["r1", "r5"],
+      "sensitivity": 0.65
+    },
+    {
+      "id": "f21",
+      "text": "22:55，沈玉兰对周砚青说「老板在书房发脾气，说要查账」",
+      "topic": ["time", "event"],
+      "holders": ["r1", "r2"],
+      "sensitivity": 0.8
+    },
+    {
+      "id": "f22",
+      "text": "暴雪封路，三天之内谁也进出不了雾镇",
+      "topic": ["event"],
+      "holders": ["r1", "r2", "r3", "r4", "r5"],
+      "sensitivity": 0.0
+    },
+    {
+      "id": "f23",
+      "text": "当晚旅馆里除了死者，只有这五个人",
+      "topic": ["event"],
+      "holders": ["r1", "r2", "r3", "r4", "r5"],
+      "sensitivity": 0.0
+    }
+  ],
+  "clues": [
+    { "id": "c01", "from": "f05", "name": "阿蘅的目击", "desc": "23:00，有人看见沈玉兰从书房出来，袖口有灰" },
+    { "id": "c02", "from": "f06", "name": "楼梯口的相遇", "desc": "23:05，周砚青在楼梯口碰见沈玉兰" },
+    { "id": "c03", "from": "f07", "name": "少了一根拨火棍", "desc": "书房壁炉边只有一根拨火棍" },
+    { "id": "c04", "from": "f08", "name": "雪堆里的凶器", "desc": "后院雪堆里埋着一根带血的拨火棍" },
+    { "id": "c05", "from": "f16", "name": "客栈登记簿", "desc": "三年前火灾当夜的登记记录" },
+    { "id": "c06", "from": "f15", "name": "那盏没吹灭的灯", "desc": "火灾起于油灯未熄" },
+    { "id": "c07", "from": "f11", "name": "一包银元", "desc": "案发后沈玉兰给过老韩钱" },
+    { "id": "c08", "from": "f03", "name": "被记错的时间", "desc": "周砚青坚称争吵持续到 23:10" }
+  ]
+}
