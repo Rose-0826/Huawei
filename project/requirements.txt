@@ -1,8 +1,10 @@
 # 剧本数据模型与校验
 pydantic==2.12.5
-# 单元测试
-pytest==9.0.2# Web 接口
+
+# Web 接口
 fastapi==0.128.7
 uvicorn==0.40.0
-# 测试 HTTP 客户端
+
+# 测试
+pytest==9.0.2
 httpx==0.28.1
