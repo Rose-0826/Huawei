@@ -1134,6 +1134,65 @@ input:focus-visible {
   border-top: 1px solid var(--line);
 }
 
+.panel {
+  border-radius: 12px;
+}
+
+.panel::after {
+  border-radius: 8px;
+}
+
+.suspect {
+  border-radius: 10px;
+}
+
+.clue-card {
+  border-radius: 8px;
+}
+
+.empty-evidence {
+  border-radius: 10px;
+}
+
+.bubble {
+  border-radius: 10px;
+}
+
+.message.npc .bubble {
+  border-radius: 10px 10px 10px 2px;
+}
+
+.message.player .bubble {
+  border-radius: 10px 10px 2px 10px;
+}
+
+.verdict-frame {
+  border-radius: 12px;
+}
+
+.truth-item {
+  border-radius: 8px;
+}
+
+.missed-chip {
+  border-radius: 999px;
+}
+
+.toast {
+  border-radius: 8px;
+}
+
+.ghost-button,
+.accuse-button,
+.send-button,
+.present-button {
+  border-radius: 6px;
+}
+
+.ask-form input {
+  border-radius: 6px;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
