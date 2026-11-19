@@ -26,7 +26,9 @@ def test_get_llm_uses_mock_switch(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_get_llm_reports_missing_env(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr("app.llm.ENV_FILE", tmp_path / "missing.env")
     monkeypatch.delenv("MOCK_LLM", raising=False)
     for name in ("MAAS_API_KEY", "MAAS_ENDPOINT", "MAAS_MODEL"):
         monkeypatch.delenv(name, raising=False)
@@ -37,6 +39,28 @@ def test_get_llm_reports_missing_env(
     message = str(raised.value)
     assert "MAAS_API_KEY" in message
     assert "MOCK_LLM=1" in message
+
+
+def test_get_llm_reads_env_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MAAS_API_KEY=file-key\n"
+        "MAAS_ENDPOINT=https://maas.example.com/v1\n"
+        "MAAS_MODEL=file-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.llm.ENV_FILE", env_file)
+    for name in ("MOCK_LLM", "MAAS_API_KEY", "MAAS_ENDPOINT", "MAAS_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+
+    client = get_llm()
+
+    assert isinstance(client, MaaSLLM)
+    assert client.model == "file-model"
+    assert client._url == "https://maas.example.com/v1/chat/completions"
 
 
 def test_maas_client_posts_openai_payload(

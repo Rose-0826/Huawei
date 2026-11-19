@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -17,6 +18,7 @@ from app.config import (
 
 logger = logging.getLogger(__name__)
 
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 MOCK_REPLY = "（模拟回复）我记得那会儿的事，但不敢乱说细节。"
 
 
@@ -97,14 +99,18 @@ class MaaSLLM:
 
 
 def get_llm() -> LLMClient:
-    """按环境变量返回模型客户端，MOCK_LLM=1 时返回模拟客户端。"""
+    """按环境变量或 project/.env 返回模型客户端，MOCK_LLM=1 时返回模拟客户端。"""
     if os.environ.get("MOCK_LLM") == "1":
         logger.info("使用模拟模型")
         return MockLLM()
 
-    api_key = os.environ.get("MAAS_API_KEY")
-    endpoint = os.environ.get("MAAS_ENDPOINT")
-    model = os.environ.get("MAAS_MODEL")
+    file_values = _read_env_file()
+    api_key = os.environ.get("MAAS_API_KEY") or file_values.get("MAAS_API_KEY")
+    endpoint = (
+        os.environ.get("MAAS_ENDPOINT")
+        or file_values.get("MAAS_ENDPOINT")
+    )
+    model = os.environ.get("MAAS_MODEL") or file_values.get("MAAS_MODEL")
     missing = [
         name
         for name, value in (
@@ -122,6 +128,22 @@ def get_llm() -> LLMClient:
         )
     logger.info("使用 MaaS 模型 %s", model)
     return MaaSLLM(api_key, endpoint, model)
+
+
+def _read_env_file() -> dict[str, str]:
+    if not ENV_FILE.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            values[key] = value
+    return values
 
 
 def _resolve_endpoint(endpoint: str) -> str:
