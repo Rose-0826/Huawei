@@ -115,7 +115,7 @@
       "text": "23:00，阿蘅上楼送炭，看见沈玉兰从书房出来，右袖沾着灰",
       "topic": ["time", "event"],
       "holders": ["r3"],
-      "sensitivity": 0.55
+      "sensitivity": 0.8
     },
     {
       "id": "f06",
