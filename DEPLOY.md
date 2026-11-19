@@ -296,3 +296,123 @@ RUN_REAL_MODEL=1 python -m pytest -q -m real_model
 - 没有登录鉴权，不要直接暴露公网。
 - 模型请求超时 30 秒，网络失败会直接模板兜底，不会连续重试。
 - `.env`、密钥、虚拟环境、`__pycache__` 都不应提交。
+
+---
+
+# 附录：华为云 ECS 部署（答辩用这条）
+
+上面两条路线都能跑，但**要给评委一个链接，走这条**。Docker 路线在本机 Docker Desktop 抽风时可以直接跳过——ECS 上的 Docker 是 Linux 原生，没那个管道问题。
+
+## 1. 买机器
+
+| 项 | 建议 |
+|---|---|
+| 规格 | 1 核 2G 足够（模型走外部 API，本机不吃算力） |
+| 镜像 | Ubuntu 22.04 LTS |
+| 带宽 | 按流量计费，或 1–5 M 固定带宽 |
+| 计费 | 用比赛发的代金券 |
+
+## 2. 安全组（入方向）
+
+| 端口 | 来源 | 用途 |
+|---|---|---|
+| 22 | 你的 IP | SSH |
+| 80 | 0.0.0.0/0 | **对外访问** |
+| 8000 | 你的 IP | 调试用，收尾时关掉 |
+
+## 3. 装环境拉代码
+
+```bash
+sudo apt update && sudo apt install -y python3-venv python3-pip nginx git
+git clone https://github.com/Rose-0826/Huawei.git
+cd Huawei/project
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+vi .env                      # 填 MAAS_API_KEY / MAAS_ENDPOINT / MAAS_MODEL
+chmod 600 .env
+python tools/check_maas.py   # 必须看到 ✓ 连通 再往下
+```
+
+## 4. systemd：让服务在 SSH 断开后还活着
+
+这是最容易翻车的一步。前台跑 `uvicorn`，你一关终端服务就没了。
+
+`sudo vi /etc/systemd/system/mistvale.service`：
+
+```ini
+[Unit]
+Description=Mistvale game
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Huawei/project
+ExecStart=/home/ubuntu/Huawei/project/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mistvale
+sudo systemctl status mistvale    # 看到 active (running)
+```
+
+**注意**：`ExecStart` 里**不要加 `--workers`**。局状态存在进程内存里，多 worker 会让"开局"和"提问"落到不同进程，表现为随机 404。
+
+## 5. Nginx 反代到 80
+
+`sudo vi /etc/nginx/sites-available/mistvale`：
+
+```nginx
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 120s;
+    }
+}
+```
+
+```bash
+sudo ln -sf /etc/nginx/sites-available/mistvale /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+`proxy_read_timeout 120s` 不能省。默认 60 秒，模型偶尔慢一点就 504，而你在答辩现场只会看到"点了没反应"。
+
+## 6. 验证
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://服务器IP/
+curl -s -X POST http://服务器IP/games | head -c 200
+```
+
+两条都该是 `200` 和一段 JSON。然后用**手机流量**打开一次（不要用校园网），确认外网真的能访问。
+
+## 7. 常见坑
+
+| 现象 | 原因 |
+|---|---|
+| 浏览器转圈后 504 | Nginx `proxy_read_timeout` 太短 |
+| 随机 404 找不到对局 | uvicorn 开了多 worker |
+| 502 Bad Gateway | systemd 服务没起来，`journalctl -u mistvale -n 50` 看日志 |
+| 页面能开但提问报错 | `.env` 没配好，`curl http://IP/` 是静态页不校验模型 |
+| SSH 一断就挂 | 还在前台跑 uvicorn，没上 systemd |
+
+日志怎么看：
+
+```bash
+sudo journalctl -u mistvale -f
+```
