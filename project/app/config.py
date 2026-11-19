@@ -19,3 +19,6 @@ LLM_TEMPERATURE: Final[float] = 0.7
 MAX_REPLY_CHARS: Final[int] = 80
 MAX_REWRITE_ATTEMPTS: Final[int] = 2
 SECRET_FRAGMENT_LENGTH: Final[int] = 8
+PRESSURE_PER_CLUE: Final[float] = 0.25
+MAX_PRESSURE: Final[float] = 1.0
+MAX_QUESTION_CHARS: Final[int] = 200
