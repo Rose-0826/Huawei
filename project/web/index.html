@@ -10,14 +10,16 @@
 <body>
   <div class="app">
     <header class="case-header">
-      <div class="case-heading">
-        <p class="case-kicker">CASE FILE · MISTVALE INN</p>
-        <h1 id="game-title">雾镇旅馆</h1>
-        <p id="era" class="case-era">1937 年冬 · 暴雪封山</p>
-      </div>
-      <div class="header-actions">
-        <button id="restart-button" class="ghost-button" type="button">重开</button>
-        <button id="accuse-button" class="accuse-button" type="button" disabled>指认</button>
+      <div class="header-inner">
+        <div class="case-heading">
+          <p class="case-kicker">CASE FILE · MISTVALE INN</p>
+          <h1 id="game-title">雾镇旅馆</h1>
+          <p id="era" class="case-era">1937 年冬 · 暴雪封山</p>
+        </div>
+        <div class="header-actions">
+          <button id="restart-button" class="ghost-button" type="button">重开</button>
+          <button id="accuse-button" class="accuse-button" type="button" disabled>指认</button>
+        </div>
       </div>
     </header>
 
@@ -35,6 +37,7 @@
           <span>审讯记录</span>
           <span id="current-suspect-label" class="panel-count">未选择</span>
         </div>
+        <div id="dialogue-hint" class="dialogue-hint">先选一个嫌疑人，开始问话。</div>
         <div id="dialogue" class="dialogue" aria-live="polite"></div>
         <form id="ask-form" class="ask-form" autocomplete="off">
           <input id="question-input" type="text" maxlength="200"

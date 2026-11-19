@@ -91,6 +91,10 @@ function scrollDialogue() {
   box.scrollTop = box.scrollHeight;
 }
 
+function setDialogueHint(text) {
+  $("#dialogue-hint").textContent = text;
+}
+
 function addSystem(text) {
   const message = element("div", "message system");
   message.appendChild(element("p", "system-text", text));
@@ -311,7 +315,7 @@ function selectNpc(npcId) {
   const role = currentRole();
   if (role) {
     $("#question-input").placeholder = `问${role.name}……`;
-    addSystem(`你把话头转向${role.name}。`);
+    setDialogueHint(`你把话头转向${role.name}。`);
   }
   refreshControls();
   $("#question-input").focus();
@@ -365,7 +369,7 @@ function renderIntro(data) {
   body.appendChild(element("p", "narration-text", data.opening));
   message.appendChild(body);
   dialogue.appendChild(message);
-  addSystem("从左边挑一个人，开始问话。");
+  setDialogueHint("先选一个嫌疑人，开始问话。");
   scrollDialogue();
 }
 
@@ -602,6 +606,7 @@ function resetUI() {
   $("#current-suspect-label").textContent = "未选择";
   $("#clue-count").textContent = "00";
   $("#suspect-count").textContent = "00";
+  setDialogueHint("先选一个嫌疑人，开始问话。");
   refreshControls();
 }
 
@@ -626,6 +631,7 @@ async function startGame() {
   } catch (error) {
     addSystem(`未能开始新的一局：${error.detail || "服务没有回应"}`);
     toast("游戏服务连接失败", "warn");
+    setDialogueHint("服务未连接，请重开。");
     refreshControls();
   }
 }
