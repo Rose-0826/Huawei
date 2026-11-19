@@ -15,7 +15,7 @@
 
 ## 技术栈（不得擅自替换）
 
-- Python 3.11+ / FastAPI / pydantic v2
+- Python 3.10+（当前环境 3.10.11）/ FastAPI / pydantic v2
 - 前端：原生 HTML + JS + CSS，不引入构建工具
 - 存储：MVP 阶段用内存 dict，不引入数据库
 - **禁止引入**：LangChain、LangGraph、AutoGen、任何 ORM、任何前端框架、任何需要额外安装的分词库
@@ -50,6 +50,19 @@ app/main.py     只做 HTTP 适配，不含业务逻辑
 - 用 pytest，测试只依赖标准库 + 被测模块
 - 测试必须覆盖"边界"和"越权"：例如不持有某条 fact 的 NPC 检索必须返回空
 - 交付前跑 `pytest -q`，全绿再说完成
+
+## 版本控制（自己提交，不用等提醒）
+
+- 一个模块做完、测试全绿之后，**自己 `git commit`**，不用问
+- 提交信息格式：`<type>: <做了什么>`
+  - type 只能是 `feat` / `fix` / `test` / `docs` / `refactor` / `chore`
+  - 例：`feat: 剧本数据层，含 7 条交叉引用校验`
+- 一句话说清改了什么。**禁止** "update"、"修改"、"优化一下" 这类空话
+- 提交前必须 `pytest -q` 全绿；红了不许提交
+- 只提交 `project/` 下的代码与测试。`docs/**` 和剧本 JSON 的改动要等我说，别自己 commit
+- 绝不提交 `.env`、密钥、`venv/`、`__pycache__/`
+- 不要 `push --force`，不要 amend 已经推送的提交
+- 每段结束在汇报里附上 `git log --oneline -3` 的真实输出
 
 ## 交互协议（每一轮必须遵守）
 
