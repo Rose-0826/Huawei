@@ -151,6 +151,14 @@ def test_system_prompt_contains_interrogator_context(
     assert "提防" in prompt
 
 
+def test_system_prompt_forbids_naming_interviewer(script: Script) -> None:
+    prompt = build_system_prompt(_role(script, "r1"), script)
+
+    assert "问话的人你不认识" in prompt
+    assert "不要把他当成剧中的任何角色" in prompt
+    assert "不要称呼他的姓名" in prompt
+
+
 def test_user_prompt_distinguishes_evade_states(script: Script) -> None:
     fact = _fact(script, "f09")
     unknown = Decision(
@@ -173,6 +181,26 @@ def test_user_prompt_distinguishes_evade_states(script: Script) -> None:
 
     assert "简短地说你不知道" in unknown_prompt
     assert "含糊" in withhold_prompt
+
+
+def test_evade_prompt_does_not_leak_fact_text(script: Script) -> None:
+    fact = _fact(script, "f05")
+    decision = Decision(
+        action="evade",
+        fact_id="f05",
+        content=None,
+        is_lie=False,
+        risk=0.6,
+    )
+
+    prompt = build_user_prompt(decision, fact)
+
+    assert fact.text not in prompt
+    assert "23:00" not in prompt
+    assert "送炭" not in prompt
+    assert "右袖沾着灰" not in prompt
+    assert "你知道这件事，但不愿说" in prompt
+    assert "关于那段时间你在哪里" in prompt
 
 
 def test_unparsed_prompt_asks_back(script: Script) -> None:
@@ -306,6 +334,26 @@ def test_known_evade_cannot_answer_unknown(script: Script) -> None:
     assert result == "有些事，你还是别问得太细。"
     assert len(llm.calls) == 2
     assert "含糊" in llm.calls[1][1]
+
+
+def test_evade_cannot_repeat_fact_details(script: Script) -> None:
+    fact = _fact(script, "f05")
+    role = _role(script, "r3")
+    decision = Decision(
+        action="evade",
+        fact_id="f05",
+        content=None,
+        is_lie=False,
+        risk=0.6,
+    )
+    llm = FakeLLM([fact.text, "有些事，你还是别问得太细。"])
+
+    result = compose(role, decision, fact, script, llm)
+
+    assert result == "有些事，你还是别问得太细。"
+    assert len(llm.calls) == 2
+    assert fact.text not in llm.calls[0][1]
+    assert "时间和事实不符" in llm.calls[1][1]
 
 def test_llm_unavailable_falls_back_without_retry(
     script: Script,

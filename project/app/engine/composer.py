@@ -12,6 +12,14 @@ from app.models import Fact, Role, Script
 
 logger = logging.getLogger(__name__)
 
+TOPIC_DIRECTIONS: dict[str, str] = {
+    "time": "关于那段时间你在哪里",
+    "weapon": "关于那件东西",
+    "motive": "关于你为什么这么做",
+    "relation": "关于你和他的关系",
+    "event": "关于那晚发生了什么",
+}
+
 
 def compose(
     role: Role,
@@ -77,7 +85,9 @@ def build_system_prompt(role: Role, script: Script) -> str:
         f"关系：\n{relations_text}\n"
         f"情境：你正被一个人单独问话，他在查{script.victim.name}的死。"
         "你不清楚他的身份，只觉得他不像住客，"
-        "因此你要提防他，但不能表现得太明显。\n"
+        "因此你要提防他，但不能表现得太明显。"
+        "问话的人你不认识，不要把他当成剧中的任何角色，"
+        "也不要称呼他的姓名。\n"
         "必须遵守：\n"
         f"1. 用第一人称、民国口吻说话，不超过 {MAX_REPLY_CHARS} 字。\n"
         "2. 秘密只用来约束你的行为，永远不能直接说出秘密内容。\n"
@@ -89,7 +99,14 @@ def build_system_prompt(role: Role, script: Script) -> str:
 
 
 def build_user_prompt(decision: Decision, fact: Fact | None) -> str:
-    """构造本次动作的用户提示，只包含 Decision 与给定事实。"""
+    """构造本次动作的用户提示，只包含 Decision 与允许透露的内容。"""
+    if decision.action == "evade" and decision.fact_id is not None:
+        return (
+            "动作：你知道这件事，但不愿说。含糊其辞、转移话题或反问，"
+            "不要直接说“我不知道”，也不要把这件事的具体内容说出来。\n"
+            f"话题方向：{_topic_direction(fact)}\n"
+            "只输出角色的话。"
+        )
     content = decision.content or (fact.text if fact is not None else "")
     return (
         f"{_action_text(decision)}\n"
@@ -136,11 +153,23 @@ def _action_text(decision: Decision) -> str:
 
 
 def _allowed_text(decision: Decision, fact: Fact | None) -> str:
+    if decision.action == "evade":
+        return ""
     if decision.content is not None:
         return decision.content
     if fact is not None:
         return fact.text
     return ""
+
+
+def _topic_direction(fact: Fact | None) -> str:
+    if fact is None:
+        return "关于你被问到的那件事"
+    for topic in fact.topic:
+        direction = TOPIC_DIRECTIONS.get(topic)
+        if direction:
+            return direction
+    return "关于你被问到的那件事"
 
 
 def _action_issue(draft: str, decision: Decision) -> str | None:
