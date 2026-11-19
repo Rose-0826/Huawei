@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 UnitFloat = Annotated[float, Field(ge=0.0, le=1.0)]
+Topic = Literal["time", "weapon", "motive", "relation", "event"]
+TOPICS: tuple[Topic, ...] = (
+    "time",
+    "weapon",
+    "motive",
+    "relation",
+    "event",
+)
 
 
 class ScriptModel(BaseModel):
@@ -41,7 +49,7 @@ class Role(ScriptModel):
 class Fact(ScriptModel):
     id: NonEmptyStr
     text: NonEmptyStr
-    topic: list[NonEmptyStr]
+    topic: list[Topic]
     holders: list[NonEmptyStr]
     sensitivity: UnitFloat
     belief: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)

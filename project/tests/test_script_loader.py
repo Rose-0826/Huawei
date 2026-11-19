@@ -5,10 +5,11 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
-from app.models import Script
+from app.models import TOPICS, Script, Topic
 from app.script_loader import (
     ScriptLoadError,
     ScriptValidationError,
@@ -339,3 +340,19 @@ def test_cli_returns_one_on_invalid_json(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "剧本不是合法 JSON" in captured.err
+
+def test_topic_values_match_schema() -> None:
+    assert set(get_args(Topic)) == set(TOPICS)
+
+
+def test_topic_value_must_be_known(valid_data: dict) -> None:
+    _fact(valid_data, "f01")["topic"] = ["time", "money"]
+
+    with pytest.raises(ScriptValidationError) as raised:
+        parse_script(valid_data)
+
+    _assert_issue(
+        raised.value,
+        "facts[f01].topic[1]",
+        "只允许 time / weapon / motive / relation / event",
+    )

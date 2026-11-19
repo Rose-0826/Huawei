@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.models import Fact, Role, Script
+from app.models import TOPICS, Fact, Role, Script
 
 DEFAULT_SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -106,8 +106,11 @@ _PYDANTIC_MESSAGES = {
 
 def _pydantic_issue(error: dict[str, Any], data: dict[str, Any]) -> ScriptIssue:
     path = _format_loc(tuple(error.get("loc", ())), data)
-    raw_message = str(error.get("msg", "字段非法"))
-    message = _PYDANTIC_MESSAGES.get(raw_message, raw_message)
+    if error.get("type") == "literal_error":
+        message = "只允许 " + " / ".join(TOPICS)
+    else:
+        raw_message = str(error.get("msg", "字段非法"))
+        message = _PYDANTIC_MESSAGES.get(raw_message, raw_message)
     return ScriptIssue(path, message)
 
 
