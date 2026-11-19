@@ -300,3 +300,12 @@ def test_accuse_wrong_suspect(client: TestClient, script: Script) -> None:
     assert data["correct"] is False
     assert [fact["fact_id"] for fact in data["timeline"]] == script.solution_path
     assert set(data["missed_fact_ids"]) == set(script.solution_path)
+
+def test_frontend_is_served(client: TestClient) -> None:
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "雾镇旅馆" in response.text
+    assert "./app.js" in response.text
+    assert client.get("/app.js").status_code == 200
+    assert client.get("/styles.css").status_code == 200

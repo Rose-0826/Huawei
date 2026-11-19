@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import MAX_QUESTION_CHARS
@@ -18,6 +21,8 @@ from app.game import (
 )
 from app.models import Clue, Script
 from app.script_loader import DEFAULT_SCRIPT_PATH, load_script
+
+WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 
 
 class APIModel(BaseModel):
@@ -194,6 +199,11 @@ def create_app(
             missed_fact_ids=list(outcome.missed_fact_ids),
         )
 
+    application.mount(
+        "/",
+        StaticFiles(directory=WEB_DIR, html=True),
+        name="web",
+    )
     return application
 
 
