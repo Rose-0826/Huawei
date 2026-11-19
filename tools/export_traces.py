@@ -127,7 +127,7 @@ def render_part(data, max_output):
 
 
 def export(db_path: Path, out_dir: Path, max_output: int):
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         snap = snapshot_db(db_path, Path(td))
         con = sqlite3.connect(f"file:{snap}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
@@ -138,6 +138,7 @@ def export(db_path: Path, out_dir: Path, max_output: int):
         ).fetchall()
 
         if not sessions:
+            con.close()
             print("⚠️  数据库里还没有任何会话记录。先在码道里聊上几句再来导。")
             return 1
 
