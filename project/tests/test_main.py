@@ -113,6 +113,62 @@ def test_present_clue_updates_pressure_and_answers_immediately(
     assert [clue["id"] for clue in state["clues"]] == ["c03", "c01"]
 
 
+def test_duplicate_clue_to_same_npc_returns_409(
+    client: TestClient,
+) -> None:
+    game_id = _start(client)
+    client.post(
+        f"/games/{game_id}/ask",
+        json={"npc_id": "r3", "question": "壁炉边的拨火棍呢"},
+    )
+
+    first = client.post(
+        f"/games/{game_id}/clues",
+        json={"npc_id": "r3", "clue_id": "c03"},
+    )
+    second = client.post(
+        f"/games/{game_id}/clues",
+        json={"npc_id": "r3", "clue_id": "c03"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"] == "这张线索你已经给他看过了"
+
+    state = client.get(f"/games/{game_id}").json()
+    assert state["pressure"]["r3"] == pytest.approx(0.25)
+
+
+def test_same_clue_different_npcs_both_work(
+    client: TestClient,
+) -> None:
+    game_id = _start(client)
+    client.post(
+        f"/games/{game_id}/ask",
+        json={"npc_id": "r3", "question": "壁炉边的拨火棍呢"},
+    )
+    client.post(
+        f"/games/{game_id}/ask",
+        json={"npc_id": "r1", "question": "你用什么打他"},
+    )
+
+    first = client.post(
+        f"/games/{game_id}/clues",
+        json={"npc_id": "r3", "clue_id": "c03"},
+    )
+    second = client.post(
+        f"/games/{game_id}/clues",
+        json={"npc_id": "r1", "clue_id": "c03"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    state = client.get(f"/games/{game_id}").json()
+    assert state["pressure"]["r3"] == pytest.approx(0.25)
+    assert state["pressure"]["r1"] == pytest.approx(0.25)
+
+
 def test_present_locked_clue_returns_409(client: TestClient) -> None:
     game_id = _start(client)
 

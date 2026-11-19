@@ -23,6 +23,7 @@ class GameState:
     pressure: dict[str, float] = field(default_factory=dict)
     last_questions: dict[str, str] = field(default_factory=dict)
     unlocked_clue_ids: list[str] = field(default_factory=list)
+    presented_clue_pairs: set[tuple[str, str]] = field(default_factory=set)
     disclosed_fact_ids: set[str] = field(default_factory=set)
     ended: bool = False
     accusation: AccusationOutcome | None = None
@@ -156,9 +157,13 @@ def present_clue(
         return _ask_error("clue_not_found")
     if clue_id not in state.unlocked_clue_ids:
         return _ask_error("clue_not_unlocked")
+    pair = (clue_id, npc_id)
+    if pair in state.presented_clue_pairs:
+        return _ask_error("clue_already_presented")
     question = state.last_questions.get(npc_id)
     if question is None:
         return _ask_error("no_question_asked")
+    state.presented_clue_pairs.add(pair)
     state.pressure[npc_id] = min(
         MAX_PRESSURE,
         state.pressure.get(npc_id, 0.0) + PRESSURE_PER_CLUE,

@@ -142,16 +142,16 @@ def test_present_clue_increases_pressure_and_reanswers(
 
 def test_pressure_caps_at_one(store: GameStore, script: Script) -> None:
     state = store.start(script)
-    _ask_weapon(store, state.game_id)
-    ask(store, state.game_id, "r3", "那晚你看见什么", FakeLLM())
+    state.unlocked_clue_ids.extend(["c01", "c03", "c04", "c07"])
+    state.last_questions["r3"] = "那晚你看见什么"
 
     outcome = None
-    for _ in range(4):
+    for clue_id in ("c01", "c03", "c04", "c07"):
         outcome = present_clue(
             store,
             state.game_id,
             "r3",
-            "c03",
+            clue_id,
             FakeLLM(),
         )
         assert outcome.ok is True
@@ -159,6 +159,69 @@ def test_pressure_caps_at_one(store: GameStore, script: Script) -> None:
     assert outcome is not None
     assert outcome.pressure == pytest.approx(1.0)
     assert state.pressure["r3"] == pytest.approx(1.0)
+
+
+def test_same_clue_same_npc_only_once(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    _ask_weapon(store, state.game_id)
+    ask(store, state.game_id, "r3", "那晚你看见什么", FakeLLM())
+
+    first = present_clue(
+        store,
+        state.game_id,
+        "r3",
+        "c03",
+        FakeLLM(),
+    )
+    second = present_clue(
+        store,
+        state.game_id,
+        "r3",
+        "c03",
+        FakeLLM(),
+    )
+
+    assert first.ok is True
+    assert first.pressure == pytest.approx(0.25)
+    assert second.ok is False
+    assert second.error == "clue_already_presented"
+    assert state.pressure["r3"] == pytest.approx(0.25)
+
+
+def test_same_clue_different_npcs_both_work(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    _ask_weapon(store, state.game_id)
+    ask(store, state.game_id, "r1", "你用什么打他", FakeLLM())
+
+    first = present_clue(
+        store,
+        state.game_id,
+        "r3",
+        "c03",
+        FakeLLM(),
+    )
+    second = present_clue(
+        store,
+        state.game_id,
+        "r1",
+        "c03",
+        FakeLLM(),
+    )
+
+    assert first.ok is True
+    assert second.ok is True
+    assert state.pressure["r3"] == pytest.approx(0.25)
+    assert state.pressure["r1"] == pytest.approx(0.25)
+    assert state.presented_clue_pairs == {
+        ("c03", "r3"),
+        ("c03", "r1"),
+    }
 
 
 def test_present_requires_unlocked_clue(

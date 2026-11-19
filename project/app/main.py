@@ -112,6 +112,7 @@ GAME_ERRORS: dict[str, tuple[int, str]] = {
     "npc_not_found": (404, "找不到这个角色"),
     "clue_not_found": (404, "找不到这张线索"),
     "clue_not_unlocked": (409, "这张线索还没有解锁，不能出示"),
+    "clue_already_presented": (409, "这张线索你已经给他看过了"),
     "no_question_asked": (409, "还没有向这个角色提问，无法让他重新回答"),
     "game_ended": (409, "本局已经结束，请开始新的一局"),
     "empty_question": (422, "问题不能为空"),
