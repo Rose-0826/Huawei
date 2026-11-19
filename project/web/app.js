@@ -171,6 +171,7 @@ function renderSideRail() {
     if (role.id === state.currentNpcId) {
       button.classList.add("selected");
     }
+    button.classList.add(`role-${role.id}`);
     const silhouette = element("span", "mini-silhouette");
     silhouette.appendChild(element("span", "mini-head"));
     silhouette.appendChild(element("span", "mini-body"));
@@ -227,9 +228,18 @@ function mergeClue(clue) {
   toast(`取得物证：${clue.name}`, "good");
 }
 
+function applyRoleSilhouette(roleId) {
+  const actor = $("#actor");
+  for (const role of state.roles) {
+    actor.classList.remove(`role-${role.id}`);
+  }
+  actor.classList.add(`role-${roleId}`);
+}
+
 function showActor(role) {
   const actor = $("#actor");
   const actorId = $("#actor-id");
+  applyRoleSilhouette(role.id);
   $("#actor-name").textContent = role.name;
   $("#actor-public").textContent = role.public;
   updateMood(state.pressure[role.id] ?? 0);
