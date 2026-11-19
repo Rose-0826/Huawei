@@ -199,3 +199,34 @@ def test_decisions_cover_all_four_actions(script: Script) -> None:
         "lie",
         "unparsed",
     }
+
+def test_risk_is_independent_of_lie_propensity(script: Script) -> None:
+    fact = _fact(script, "f04")
+    base_role = _role(script, "r1")
+    honest = base_role.model_copy(update={"lie_propensity": 0.0})
+    liar = base_role.model_copy(update={"lie_propensity": 1.0})
+    intent = parse_intent("凶器")
+    pressure = 0.5
+
+    honest_decision = decide(honest, fact, intent, pressure)
+    liar_decision = decide(liar, fact, intent, pressure)
+
+    assert honest_decision.risk == liar_decision.risk
+
+
+def test_lie_propensity_only_changes_protection_style(
+    script: Script,
+) -> None:
+    fact = _fact(script, "f05").model_copy(update={"sensitivity": 1.0})
+    base_role = _role(script, "r3")
+    liar = base_role.model_copy(update={"lie_propensity": 0.9})
+    honest = base_role.model_copy(update={"lie_propensity": 0.3})
+    intent = parse_intent("你看见什么")
+    pressure = 0.3
+
+    liar_decision = decide(liar, fact, intent, pressure)
+    honest_decision = decide(honest, fact, intent, pressure)
+
+    assert liar_decision.risk == honest_decision.risk
+    assert liar_decision.action == "lie"
+    assert honest_decision.action == "evade"

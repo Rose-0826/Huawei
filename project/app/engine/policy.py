@@ -10,8 +10,7 @@ from app.config import (
     DECISION_LIE_PROPENSITY_CUTOFF,
     DECISION_LIE_THRESHOLD,
     DECISION_PRESSURE_RELIEF,
-    DECISION_RISK_BASE,
-    DECISION_RISK_LIE_FACTOR,
+
 )
 from app.engine.intent import Intent
 from app.models import Fact, Role
@@ -63,7 +62,7 @@ def decide(
             risk=0.0,
         )
 
-    risk = _risk(fact, role, pressure)
+    risk = _risk(fact, pressure)
     belief_text = fact.belief.get(role.id)
     if belief_text is not None:
         if risk <= DECISION_DISCLOSE_THRESHOLD:
@@ -110,11 +109,7 @@ def decide(
     )
 
 
-def _risk(fact: Fact, role: Role, pressure: float) -> float:
+def _risk(fact: Fact, pressure: float) -> float:
     bounded_pressure = max(0.0, min(1.0, pressure))
-    raw = (
-        fact.sensitivity
-        * (DECISION_RISK_BASE + DECISION_RISK_LIE_FACTOR * role.lie_propensity)
-        - DECISION_PRESSURE_RELIEF * bounded_pressure
-    )
+    raw = fact.sensitivity - DECISION_PRESSURE_RELIEF * bounded_pressure
     return max(0.0, min(1.0, raw))
