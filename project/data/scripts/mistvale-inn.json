@@ -122,7 +122,7 @@
       "text": "23:05，周砚青在楼梯口碰见沈玉兰，她把手帕攥得死紧",
       "topic": ["time", "event"],
       "holders": ["r1", "r2"],
-      "sensitivity": 0.45
+      "sensitivity": 0.6
     },
     {
       "id": "f07",
