@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -130,7 +131,9 @@ def create_app(
     store: GameStore | None = None,
 ) -> FastAPI:
     """创建 FastAPI 应用，可注入剧本与内存存储以便测试。"""
-    game_script = script or load_script(DEFAULT_SCRIPT_PATH)
+    game_script = script or load_script(
+        os.environ.get("SCRIPT_PATH") or DEFAULT_SCRIPT_PATH
+    )
     game_store = store or GameStore()
     application = FastAPI(title="雾镇", version="0.1.0")
 

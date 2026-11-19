@@ -1,0 +1,15 @@
+.git
+.gitignore
+.codeartsdoer
+.arts
+.env
+project/.env
+project/.venv
+project/venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+docs
+project/_try2.py
+README.md
+DEPLOY.md

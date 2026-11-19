@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -309,3 +310,22 @@ def test_frontend_is_served(client: TestClient) -> None:
     assert "./app.js" in response.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/styles.css").status_code == 200
+
+def test_script_path_env_selects_script(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data = json.loads(SCRIPT_PATH.read_text(encoding="utf-8"))
+    data["title"] = "雾镇旅馆·副本"
+    target = tmp_path / "copy.json"
+    target.write_text(
+        json.dumps(data, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SCRIPT_PATH", str(target))
+
+    client = TestClient(create_app())
+    response = client.post("/games")
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "雾镇旅馆·副本"
