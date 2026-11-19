@@ -62,6 +62,7 @@ app/main.py     只做 HTTP 适配，不含业务逻辑
 - 只提交 `project/` 下的代码与测试。`docs/**` 和剧本 JSON 的改动要等我说，别自己 commit
 - 绝不提交 `.env`、密钥、`venv/`、`__pycache__/`
 - 不要 `push --force`，不要 amend 已经推送的提交
+- **只 `commit`，不 `push`**。推送由我自己决定，我说 push 你再推
 - 每段结束在汇报里附上 `git log --oneline -3` 的真实输出
 
 ## 交互协议（每一轮必须遵守）
