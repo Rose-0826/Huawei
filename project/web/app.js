@@ -8,6 +8,8 @@ const state = {
   currentNpcId: null,
   selectedClueId: null,
   seenClues: new Set(),
+  confrontMode: false,
+  confrontIds: [],
   busy: false,
   ended: false,
   accuseArmed: false,
@@ -172,12 +174,17 @@ function renderSideRail() {
       button.classList.add("selected");
     }
     button.classList.add(`role-${role.id}`);
+    const pickIndex = state.confrontIds.indexOf(role.id);
+    if (state.confrontMode && pickIndex >= 0) {
+      button.classList.add("confront-picked");
+      button.dataset.pick = String(pickIndex + 1);
+    }
     const silhouette = element("span", "mini-silhouette");
     silhouette.appendChild(element("span", "mini-head"));
     silhouette.appendChild(element("span", "mini-body"));
     button.appendChild(silhouette);
     button.appendChild(element("span", "side-name", role.name));
-    button.addEventListener("click", () => selectNpc(role.id));
+    button.addEventListener("click", () => handleSuspectClick(role.id));
     rail.appendChild(button);
   });
 }
@@ -287,23 +294,117 @@ function selectNpc(npcId) {
   $("#question-input").focus();
 }
 
+function handleSuspectClick(npcId) {
+  if (state.confrontMode) {
+    toggleConfrontPick(npcId);
+    return;
+  }
+  selectNpc(npcId);
+}
+
+function toggleConfrontPick(npcId) {
+  if (state.busy || state.ended) {
+    return;
+  }
+  const index = state.confrontIds.indexOf(npcId);
+  if (index >= 0) {
+    state.confrontIds.splice(index, 1);
+  } else {
+    state.confrontIds.push(npcId);
+    if (state.confrontIds.length > 2) {
+      state.confrontIds.shift();
+    }
+  }
+  renderSideRail();
+  updateConfrontPlaceholder();
+  refreshControls();
+  if (state.confrontIds.length === 2) {
+    $("#question-input").focus();
+  }
+}
+
+function confrontNames() {
+  return state.confrontIds
+    .map((id) => {
+      const role = state.roles.find((item) => item.id === id);
+      return role ? role.name : id;
+    })
+    .join(" 与 ");
+}
+
+function updateConfrontPlaceholder() {
+  if (!state.confrontMode) {
+    return;
+  }
+  const input = $("#question-input");
+  input.placeholder = state.confrontIds.length === 2
+    ? `问${confrontNames()}……`
+    : "先在左边选两个人";
+}
+
+function toggleConfrontMode() {
+  if (state.busy || state.ended) {
+    return;
+  }
+  state.confrontMode = !state.confrontMode;
+  state.confrontIds = [];
+  const toggle = $("#confront-toggle");
+  toggle.classList.toggle("active", state.confrontMode);
+  toggle.textContent = state.confrontMode ? "退出对质" : "对质";
+  $("#send-button").textContent = state.confrontMode ? "对" : "问";
+  clearConfrontLog();
+  $("#speech").classList.remove("hidden");
+  if (state.confrontMode) {
+    updateConfrontPlaceholder();
+  } else {
+    const role = currentRole();
+    $("#question-input").placeholder = role ? `问${role.name}……` : "你要问什么？";
+  }
+  renderSideRail();
+  refreshControls();
+  $("#question-input").focus();
+}
+
+function clearConfrontLog() {
+  const log = $("#confront-log");
+  if (!log) {
+    return;
+  }
+  log.classList.add("hidden");
+  $("#confront-who-a").textContent = "";
+  $("#confront-say-a").textContent = "";
+  $("#confront-who-b").textContent = "";
+  $("#confront-say-b").textContent = "";
+  $("#confront-verdict").textContent = "";
+}
+
 function refreshControls() {
   const role = currentRole();
   const question = $("#question-input").value.trim();
   const locked = state.busy || state.ended;
   const hasClue = Boolean(state.selectedClueId);
+  const confronting = state.confrontMode;
+  const twoPicked = state.confrontIds.length === 2;
 
   $("#question-input").disabled = locked;
-  $("#send-button").disabled = locked || !role || !question;
-  $("#accuse-button").disabled = locked || !role;
+  if (confronting) {
+    $("#send-button").disabled = locked || !twoPicked || !question;
+  } else {
+    $("#send-button").disabled = locked || !role || !question;
+  }
+  $("#accuse-button").disabled = locked || !role || confronting;
   $("#restart-button").disabled = state.busy;
-  $("#present-button").classList.toggle("hidden", !hasClue);
-  $("#present-button").disabled = locked || !role;
-  $("#present-target").textContent = hasClue
-    ? (role ? `递给 ${role.name}` : "先选一个人")
-    : "";
+  $("#confront-toggle").disabled = locked;
+  $("#present-button").classList.toggle(
+    "hidden",
+    confronting || !hasClue
+  );
+  $("#present-button").disabled = locked || !role || confronting;
+  $("#present-target").textContent = confronting || !hasClue
+    ? ""
+    : (role ? `递给 ${role.name}` : "先选一个人");
 
-  if (!role) {
+  if (!role && !confronting) {
     $("#question-input").placeholder = "你要问什么？";
   }
 }
@@ -395,8 +496,82 @@ function flyClue(clue, onLanded) {
   }, 560);
 }
 
+const CONFRONT_VERDICTS = {
+  aligned: "两人口径一致",
+  conflicting: "两人口径对不上",
+  unclear: "两人都没把话说实",
+};
+
+function renderConfront(data) {
+  const replies = Array.isArray(data.replies) ? data.replies : [];
+  const first = replies[0];
+  const second = replies[1];
+  if (!first || !second) {
+    toast("两人的回答没有对上", "warn");
+    return;
+  }
+  $("#confront-who-a").textContent = first.name;
+  $("#confront-say-a").textContent = first.reply;
+  $("#confront-who-b").textContent = second.name;
+  $("#confront-say-b").textContent = second.reply;
+  const verdict = $("#confront-verdict");
+  verdict.textContent = CONFRONT_VERDICTS[data.alignment] || "说不清";
+  verdict.dataset.alignment = data.alignment || "unclear";
+  $("#confront-log").classList.remove("hidden");
+}
+
+async function handleConfront(event) {
+  event.preventDefault();
+  if (state.busy || state.ended) {
+    return;
+  }
+  if (!state.gameId) {
+    toast("等开局再对质", "warn");
+    return;
+  }
+  if (state.confrontIds.length !== 2) {
+    toast("先在左边选两个人", "warn");
+    return;
+  }
+  const question = $("#question-input").value.trim();
+  if (!question) {
+    toast("先写一句要问两个人的话", "warn");
+    return;
+  }
+
+  state.busy = true;
+  $("#question-input").value = "";
+  refreshControls();
+  $("#speech").classList.add("hidden");
+  clearConfrontLog();
+
+  try {
+    const data = await api(`/games/${state.gameId}/confront`, {
+      method: "POST",
+      body: JSON.stringify({
+        npc_ids: state.confrontIds,
+        question,
+      }),
+    });
+    for (const clue of data.unlocked_clues || []) {
+      mergeClue(clue);
+    }
+    renderConfront(data);
+  } catch (error) {
+    toast(error.detail || "两人没有对上话", "warn");
+    $("#speech").classList.remove("hidden");
+  } finally {
+    state.busy = false;
+    refreshControls();
+  }
+}
+
 async function handleAsk(event) {
   event.preventDefault();
+  if (state.confrontMode) {
+    await handleConfront(event);
+    return;
+  }
   if (state.busy || state.ended) {
     return;
   }
@@ -415,6 +590,8 @@ async function handleAsk(event) {
   state.busy = true;
   input.value = "";
   refreshControls();
+  clearConfrontLog();
+  $("#speech").classList.remove("hidden");
   $("#last-question").textContent = `你问：${question}`;
   $("#actor").classList.add("asking");
   speak("……", { waiting: true });
@@ -630,6 +807,13 @@ function resetUI() {
   $("#last-question").textContent = "";
   $("#question-input").value = "";
   $("#question-input").placeholder = "你要问什么？";
+  state.confrontMode = false;
+  state.confrontIds = [];
+  $("#confront-toggle").classList.remove("active");
+  $("#confront-toggle").textContent = "对质";
+  $("#send-button").textContent = "问";
+  clearConfrontLog();
+  $("#speech").classList.remove("hidden");
   $("#present-button").classList.add("hidden");
   $("#present-target").textContent = "";
   $("#table-evidence").classList.add("hidden");
@@ -693,6 +877,7 @@ function init() {
   $("#accuse-button").addEventListener("click", handleAccuse);
   $("#restart-button").addEventListener("click", restartGame);
   $("#present-button").addEventListener("click", handlePresent);
+  $("#confront-toggle").addEventListener("click", toggleConfrontMode);
   $("#restart-verdict").addEventListener("click", restartGame);
   refreshControls();
   startGame();

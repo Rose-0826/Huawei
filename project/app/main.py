@@ -12,11 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import MAX_QUESTION_CHARS
 from app.game import (
     AskOutcome,
+
     GameStore,
     GameView,
     ask,
     accuse,
     build_view,
+    confront,
     get_view,
     present_clue,
 )
@@ -92,6 +94,29 @@ class PresentClueRequest(APIModel):
     clue_id: str = Field(min_length=1)
 
 
+class ConfrontRequest(APIModel):
+    """对质请求：两个不同角色与同一个问题。"""
+
+    npc_ids: list[str] = Field(min_length=2, max_length=2)
+    question: str = Field(min_length=1)
+
+
+class ConfrontReplyPublic(APIModel):
+    """对质中一个角色的原话。"""
+
+    npc_id: str
+    name: str
+    reply: str
+
+
+class ConfrontResponse(APIModel):
+    """对质结果：两人原话与口径判断。"""
+
+    alignment: str
+    replies: list[ConfrontReplyPublic]
+    unlocked_clues: list[CluePublic]
+
+
 class AccuseRequest(APIModel):
     """指认请求。"""
 
@@ -123,6 +148,8 @@ GAME_ERRORS: dict[str, tuple[int, str]] = {
     "game_ended": (409, "本局已经结束，请开始新的一局"),
     "empty_question": (422, "问题不能为空"),
     "question_too_long": (422, f"问题不能超过 {MAX_QUESTION_CHARS} 字"),
+    "confront_needs_two": (422, "对质需要两个不同的人"),
+    "confront_failed": (500, "两人的回答没有形成可比的口径"),
 }
 
 
@@ -170,6 +197,37 @@ def create_app(
         )
         _raise_error(outcome.error)
         return _ask_public(outcome)
+
+    @application.post(
+        "/games/{game_id}/confront",
+        response_model=ConfrontResponse,
+    )
+    def confront_witnesses(
+        game_id: str,
+        request: ConfrontRequest,
+    ) -> ConfrontResponse:
+        """让两人回答同一问题，返回原话与口径是否一致。"""
+        outcome = confront(
+            game_store,
+            game_id,
+            tuple(request.npc_ids),
+            request.question,
+        )
+        _raise_error(outcome.error)
+        return ConfrontResponse(
+            alignment=outcome.alignment or "unclear",
+            replies=[
+                ConfrontReplyPublic(
+                    npc_id=reply.npc_id,
+                    name=reply.name,
+                    reply=reply.reply,
+                )
+                for reply in outcome.replies
+            ],
+            unlocked_clues=[
+                _clue_public(clue) for clue in outcome.unlocked_clues
+            ],
+        )
 
     @application.get(
         "/games/{game_id}",
@@ -255,6 +313,7 @@ def _raise_error(error: str | None) -> None:
         return
     status, message = GAME_ERRORS.get(error, (400, "请求无法处理"))
     raise HTTPException(status_code=status, detail=message)
+
 
 
 app = create_app()

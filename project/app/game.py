@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 
 from app.config import MAX_PRESSURE, MAX_QUESTION_CHARS, PRESSURE_PER_CLUE
 from app.engine.composer import compose
+from app.engine.confront import Alignment, Statement, compare_testimony
 from app.engine.intent import parse_intent
-from app.engine.policy import DecisionAction, decide
+from app.engine.policy import Decision, DecisionAction, decide
 from app.engine.retrieval import retrieve
 from app.llm import LLMClient
 from app.models import Clue, Fact, Role, Script
@@ -39,6 +40,27 @@ class AskOutcome:
     pressure: float
     unlocked_clue: Clue | None
     action: DecisionAction | None
+    decision: Decision | None = None
+
+
+@dataclass(frozen=True)
+class ConfrontReply:
+    """对质中一个角色的回答。"""
+
+    npc_id: str
+    name: str
+    reply: str
+
+
+@dataclass(frozen=True)
+class ConfrontOutcome:
+    """一次对质的结果：两人原话与口径判定。"""
+
+    ok: bool
+    error: str | None
+    replies: tuple[ConfrontReply, ...]
+    alignment: Alignment | None
+    unlocked_clues: tuple[Clue, ...]
 
 
 @dataclass(frozen=True)
@@ -171,8 +193,74 @@ def present_clue(
     return _answer(state, role, question, llm)
 
 
+def confront(
+    store: GameStore,
+    game_id: str,
+    npc_ids: tuple[str, ...],
+    question: str,
+    llm: LLMClient | None = None,
+) -> ConfrontOutcome:
+    """让两个角色回答同一问题，只比较口径是否一致。"""
+    state = store.get(game_id)
+    if state is None:
+        return _confront_error("game_not_found")
+    if state.ended:
+        return _confront_error("game_ended")
+    if len(npc_ids) != 2 or npc_ids[0] == npc_ids[1]:
+        return _confront_error("confront_needs_two")
+    roles = _role_index(state.script)
+    left = roles.get(npc_ids[0])
+    right = roles.get(npc_ids[1])
+    if left is None or right is None:
+        return _confront_error("npc_not_found")
+    text = question.strip()
+    if not text:
+        return _confront_error("empty_question")
+    if len(text) > MAX_QUESTION_CHARS:
+        return _confront_error("question_too_long")
+
+    outcomes = [_answer(state, role, text, llm) for role in (left, right)]
+    left_decision = outcomes[0].decision
+    right_decision = outcomes[1].decision
+    if left_decision is None or right_decision is None:
+        return _confront_error("confront_failed")
+    alignment = compare_testimony(
+        Statement(
+            action=left_decision.action,
+            fact_id=left_decision.fact_id,
+            content=left_decision.content,
+        ),
+        Statement(
+            action=right_decision.action,
+            fact_id=right_decision.fact_id,
+            content=right_decision.content,
+        ),
+    )
+    replies = tuple(
+        ConfrontReply(
+            npc_id=role.id,
+            name=role.name,
+            reply=outcome.reply or "",
+        )
+        for role, outcome in zip((left, right), outcomes)
+    )
+    unlocked = tuple(
+        outcome.unlocked_clue
+        for outcome in outcomes
+        if outcome.unlocked_clue is not None
+    )
+    return ConfrontOutcome(
+        ok=True,
+        error=None,
+        replies=replies,
+        alignment=alignment,
+        unlocked_clues=unlocked,
+    )
+
+
 def get_view(store: GameStore, game_id: str) -> GameView | None:
     """返回玩家可见状态，局不存在时返回空。"""
+
     state = store.get(game_id)
     if state is None:
         return None
@@ -282,6 +370,7 @@ def _answer(
         pressure=pressure,
         unlocked_clue=unlocked_clue,
         action=decision.action,
+        decision=decision,
     )
 
 
@@ -293,6 +382,16 @@ def _ask_error(error: str) -> AskOutcome:
         pressure=0.0,
         unlocked_clue=None,
         action=None,
+    )
+
+
+def _confront_error(error: str) -> ConfrontOutcome:
+    return ConfrontOutcome(
+        ok=False,
+        error=error,
+        replies=(),
+        alignment=None,
+        unlocked_clues=(),
     )
 
 

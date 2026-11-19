@@ -1,0 +1,219 @@
+"""对质判定、状态机与接口测试。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.config import MAX_QUESTION_CHARS
+from app.engine.confront import Statement, compare_testimony
+from app.game import GameStore, accuse, confront
+from app.main import create_app
+from app.models import Script
+from app.script_loader import load_script
+
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "scripts"
+    / "mistvale-inn.json"
+)
+
+
+class FakeLLM:
+    def __init__(self, reply: str = "我记得些片段，但说不清。") -> None:
+        self.reply = reply
+        self.calls: list[tuple[str, str]] = []
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append((system_prompt, user_prompt))
+        return self.reply
+
+
+@pytest.fixture
+def script() -> Script:
+    data = load_script(SCRIPT_PATH)
+    facts = {fact.id: fact for fact in data.facts}
+    facts["f05"].sensitivity = 0.7
+    return data
+
+
+@pytest.fixture
+def store() -> GameStore:
+    return GameStore()
+
+
+@pytest.fixture
+def client(
+    script: Script,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TestClient:
+    monkeypatch.setenv("MOCK_LLM", "1")
+    for name in ("MAAS_API_KEY", "MAAS_ENDPOINT", "MAAS_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    return TestClient(create_app(script, GameStore()))
+
+
+def test_same_fact_same_wording_is_aligned() -> None:
+    left = Statement("disclose", "f02", "22:30 前后有争吵")
+    right = Statement("disclose", "f02", "22:30 前后有争吵")
+
+    assert compare_testimony(left, right) == "aligned"
+
+
+def test_same_fact_different_memory_conflicts() -> None:
+    left = Statement("disclose", "f02", "22:30 前后有争吵")
+    right = Statement("disclose", "f02", "22:45 前后有争吵")
+
+    assert compare_testimony(left, right) == "conflicting"
+
+
+def test_different_facts_conflict() -> None:
+    left = Statement("disclose", "f02", "甲")
+    right = Statement("disclose", "f05", "乙")
+
+    assert compare_testimony(left, right) == "conflicting"
+
+
+def test_one_speaks_one_stays_quiet_conflicts() -> None:
+    left = Statement("disclose", "f02", "甲")
+    right = Statement("evade", "f02", None)
+
+    assert compare_testimony(left, right) == "conflicting"
+
+
+def test_both_quiet_is_unclear() -> None:
+    left = Statement("evade", None, None)
+    right = Statement("unparsed", None, None)
+
+    assert compare_testimony(left, right) == "unclear"
+
+
+def test_both_lie_conflicts() -> None:
+    left = Statement("lie", "f02", None)
+    right = Statement("lie", "f02", None)
+
+    assert compare_testimony(left, right) == "conflicting"
+
+
+def test_confront_returns_two_replies_without_pressure(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    outcome = confront(
+        store,
+        state.game_id,
+        ("r2", "r3"),
+        "22:30 前后书房里的争吵",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.alignment in {"aligned", "conflicting", "unclear"}
+    assert [reply.npc_id for reply in outcome.replies] == ["r2", "r3"]
+    assert all(reply.reply for reply in outcome.replies)
+    assert state.pressure.get("r2", 0.0) == 0.0
+    assert state.pressure.get("r3", 0.0) == 0.0
+    assert state.last_questions["r2"] == "22:30 前后书房里的争吵"
+    assert state.last_questions["r3"] == "22:30 前后书房里的争吵"
+
+
+def test_confront_validation(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    long_question = "问" * (MAX_QUESTION_CHARS + 1)
+
+    assert confront(
+        store, "missing", ("r2", "r3"), "问题", FakeLLM()
+    ).error == "game_not_found"
+    assert confront(
+        store, state.game_id, ("r2", "r2"), "问题", FakeLLM()
+    ).error == "confront_needs_two"
+    assert confront(
+        store, state.game_id, ("r2",), "问题", FakeLLM()
+    ).error == "confront_needs_two"
+    assert confront(
+        store, state.game_id, ("r2", "r9"), "问题", FakeLLM()
+    ).error == "npc_not_found"
+    assert confront(
+        store, state.game_id, ("r2", "r3"), "   ", FakeLLM()
+    ).error == "empty_question"
+    assert confront(
+        store, state.game_id, ("r2", "r3"), long_question, FakeLLM()
+    ).error == "question_too_long"
+    assert confront(
+        store, state.game_id, ("r2", "r3"), "问题", FakeLLM()
+    ).ok is True
+
+
+def test_confront_after_accusation_is_rejected(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    accuse(store, state.game_id, "r2")
+
+    outcome = confront(
+        store,
+        state.game_id,
+        ("r2", "r3"),
+        "问题",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is False
+    assert outcome.error == "game_ended"
+
+
+def test_confront_endpoint_returns_alignment(client: TestClient) -> None:
+    game_id = client.post("/games").json()["game_id"]
+
+    response = client.post(
+        f"/games/{game_id}/confront",
+        json={
+            "npc_ids": ["r2", "r3"],
+            "question": "22:30 前后书房里的争吵",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert set(data) == {"alignment", "replies", "unlocked_clues"}
+    assert data["alignment"] in {"aligned", "conflicting", "unclear"}
+    assert [reply["npc_id"] for reply in data["replies"]] == ["r2", "r3"]
+    assert all(reply["reply"] for reply in data["replies"])
+    assert "is_lie" not in response.text
+    assert "action" not in response.text
+
+    state = client.get(f"/games/{game_id}").json()
+    assert state["pressure"]["r2"] == 0.0
+    assert state["pressure"]["r3"] == 0.0
+
+
+def test_confront_endpoint_rejects_same_person(client: TestClient) -> None:
+    game_id = client.post("/games").json()["game_id"]
+
+    response = client.post(
+        f"/games/{game_id}/confront",
+        json={"npc_ids": ["r2", "r2"], "question": "问题"},
+    )
+
+    assert response.status_code == 422
+    assert "两个不同的人" in response.json()["detail"]
+
+
+def test_confront_endpoint_requires_two_ids(client: TestClient) -> None:
+    game_id = client.post("/games").json()["game_id"]
+
+    response = client.post(
+        f"/games/{game_id}/confront",
+        json={"npc_ids": ["r2"], "question": "问题"},
+    )
+
+    assert response.status_code == 422

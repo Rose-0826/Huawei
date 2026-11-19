@@ -41,6 +41,18 @@
       <span id="speech-text"></span>
     </div>
 
+    <div id="confront-log" class="confront-log hidden" aria-live="polite">
+      <div class="confront-line">
+        <span id="confront-who-a" class="confront-who"></span>
+        <span id="confront-say-a" class="confront-say"></span>
+      </div>
+      <div class="confront-line">
+        <span id="confront-who-b" class="confront-who"></span>
+        <span id="confront-say-b" class="confront-say"></span>
+      </div>
+      <p id="confront-verdict" class="confront-verdict"></p>
+    </div>
+
     <div class="chair" aria-hidden="true"></div>
 
     <div id="actor" class="actor hidden mood-guarded" aria-hidden="true">
@@ -82,7 +94,10 @@
         </section>
 
         <section class="ask-desk" aria-label="问话">
-          <p id="last-question" class="last-question"></p>
+          <div class="ask-row">
+            <p id="last-question" class="last-question"></p>
+            <button id="confront-toggle" class="confront-toggle" type="button">对质</button>
+          </div>
           <form id="ask-form" class="ask-form" autocomplete="off">
             <input id="question-input" type="text" maxlength="200"
                    placeholder="你要问什么？" aria-label="向嫌疑人提问">
