@@ -22,11 +22,15 @@ ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 MOCK_REPLY = "（模拟回复）我记得那会儿的事，但不敢乱说细节。"
 
 
+class LLMUnavailable(RuntimeError):
+    """模型网络、鉴权、超时或响应结构异常。"""
+
+
 class LLMClient(Protocol):
     """模型客户端的最小接口。"""
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        """返回模型生成的文本，失败时返回空字符串。"""
+        """返回模型生成的文本，模型不可用时抛出 LLMUnavailable。"""
         ...
 
 
@@ -54,7 +58,7 @@ class MaaSLLM:
         self._url = _resolve_endpoint(endpoint)
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        """调用模型并返回文本，网络或响应异常时返回空字符串。"""
+        """调用模型并返回文本，不可用时抛出 LLMUnavailable。"""
         payload = {
             "model": self.model,
             "messages": [
@@ -64,16 +68,16 @@ class MaaSLLM:
             "temperature": LLM_TEMPERATURE,
             "max_tokens": LLM_MAX_TOKENS,
         }
-        request = Request(
-            self._url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
         try:
+            request = Request(
+                self._url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
             with urlopen(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
         except (
@@ -81,20 +85,21 @@ class MaaSLLM:
             URLError,
             TimeoutError,
             OSError,
-            UnicodeDecodeError,
+            ValueError,
         ) as exc:
             logger.warning("模型请求失败：%s", exc)
-            return ""
+            raise LLMUnavailable(f"模型请求失败：{exc}") from exc
 
         try:
             body = json.loads(raw)
         except json.JSONDecodeError as exc:
             logger.warning("模型返回不是合法 JSON：%s", exc)
-            return ""
+            raise LLMUnavailable("模型返回不是合法 JSON") from exc
 
         content = _extract_content(body)
         if not content:
             logger.warning("模型返回没有可用文本")
+            raise LLMUnavailable("模型返回没有可用文本")
         return content
 
 

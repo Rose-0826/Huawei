@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
-from app.llm import MaaSLLM, MOCK_REPLY, MockLLM, get_llm
+from app.llm import LLMUnavailable, MaaSLLM, MOCK_REPLY, MockLLM, get_llm
 
 
 def test_mock_llm_returns_fixed_reply() -> None:
@@ -105,7 +106,7 @@ def test_maas_client_posts_openai_payload(
     assert captured["timeout"] == client.timeout
 
 
-def test_maas_client_returns_empty_on_network_error(
+def test_maas_client_raises_on_network_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_urlopen(request: Request, timeout: float) -> object:
@@ -114,10 +115,30 @@ def test_maas_client_returns_empty_on_network_error(
     monkeypatch.setattr("app.llm.urlopen", fake_urlopen)
     client = MaaSLLM("test-key", "https://maas.example.com", "deepseek")
 
-    assert client.complete("系统提示", "用户提示") == ""
+    with pytest.raises(LLMUnavailable):
+        client.complete("系统提示", "用户提示")
 
 
-def test_maas_client_returns_empty_on_bad_json(
+def test_maas_client_raises_on_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: Request, timeout: float) -> object:
+        raise HTTPError(
+            "https://maas.example.com",
+            401,
+            "Unauthorized",
+            None,
+            None,
+        )
+
+    monkeypatch.setattr("app.llm.urlopen", fake_urlopen)
+    client = MaaSLLM("bad-key", "https://maas.example.com", "deepseek")
+
+    with pytest.raises(LLMUnavailable):
+        client.complete("系统提示", "用户提示")
+
+
+def test_maas_client_raises_on_bad_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeResponse:
@@ -136,4 +157,28 @@ def test_maas_client_returns_empty_on_bad_json(
     monkeypatch.setattr("app.llm.urlopen", fake_urlopen)
     client = MaaSLLM("test-key", "https://maas.example.com", "deepseek")
 
-    assert client.complete("系统提示", "用户提示") == ""
+    with pytest.raises(LLMUnavailable):
+        client.complete("系统提示", "用户提示")
+
+
+def test_maas_client_raises_on_missing_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return b'{"choices": []}'
+
+    def fake_urlopen(request: Request, timeout: float) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr("app.llm.urlopen", fake_urlopen)
+    client = MaaSLLM("test-key", "https://maas.example.com", "deepseek")
+
+    with pytest.raises(LLMUnavailable):
+        client.complete("系统提示", "用户提示")

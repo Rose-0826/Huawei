@@ -7,7 +7,7 @@ import logging
 from app.config import MAX_REPLY_CHARS, MAX_REWRITE_ATTEMPTS
 from app.engine.policy import Decision
 from app.engine.verifier import verify_reply
-from app.llm import LLMClient, get_llm
+from app.llm import LLMClient, LLMUnavailable, get_llm
 from app.models import Fact, Role, Script
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,11 @@ def compose(
     current_prompt = user_prompt
 
     for attempt in range(MAX_REWRITE_ATTEMPTS + 1):
-        draft = client.complete(system_prompt, current_prompt)
+        try:
+            draft = client.complete(system_prompt, current_prompt)
+        except LLMUnavailable as exc:
+            logger.warning("模型不可用，直接模板兜底：%s", exc)
+            return fallback_reply(decision, role)
         verification = verify_reply(draft, allowed_text, role)
         failure = (
             verification.reason
@@ -71,6 +75,9 @@ def build_system_prompt(role: Role, script: Script) -> str:
         f"秘密：{role.secret}\n"
         f"目标：{role.goal}\n"
         f"关系：\n{relations_text}\n"
+        f"情境：你正被一个人单独问话，他在查{script.victim.name}的死。"
+        "你不清楚他的身份，只觉得他不像住客，"
+        "因此你要提防他，但不能表现得太明显。\n"
         "必须遵守：\n"
         f"1. 用第一人称、民国口吻说话，不超过 {MAX_REPLY_CHARS} 字。\n"
         "2. 秘密只用来约束你的行为，永远不能直接说出秘密内容。\n"
@@ -134,6 +141,7 @@ def _allowed_text(decision: Decision, fact: Fact | None) -> str:
     if fact is not None:
         return fact.text
     return ""
+
 
 def _action_issue(draft: str, decision: Decision) -> str | None:
     if decision.action == "unparsed" and (

@@ -10,9 +10,14 @@ from app.models import Role
 
 TIME_PATTERN = re.compile(r"\d{1,2}[:：]\d{2}")
 ARABIC_PATTERN = re.compile(r"\d+(?:\.\d+)?")
-CHINESE_NUMBER_PATTERN = re.compile(
+CHINESE_TIME_PATTERN = re.compile(
+    r"[零一二两三四五六七八九十百千万]+点"
+    r"(?:半|[零一二两三四五六七八九十]+分|一刻|"
+    r"[零一二两三四五六七八九十]+)?"
+)
+CHINESE_MEASURE_PATTERN = re.compile(
     r"[零一二两三四五六七八九十百千万]+"
-    r"(?:点[零一二两三四五六七八九十半]+)?"
+    r"(?:大洋|块|岁|年|月|日|号|刻|分)"
 )
 
 
@@ -96,7 +101,12 @@ def _normalize_token(token: str) -> str:
 
 def _extract_number_tokens(text: str) -> tuple[str, ...]:
     spans: list[tuple[int, int, str]] = []
-    for pattern in (TIME_PATTERN, ARABIC_PATTERN, CHINESE_NUMBER_PATTERN):
+    for pattern in (
+        TIME_PATTERN,
+        ARABIC_PATTERN,
+        CHINESE_TIME_PATTERN,
+        CHINESE_MEASURE_PATTERN,
+    ):
         for match in pattern.finditer(text):
             if any(start <= match.start() < end for start, end, _ in spans):
                 continue

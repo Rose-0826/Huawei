@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.engine.verifier import verify_reply
 from app.models import Role
 
@@ -112,3 +114,29 @@ def test_secret_overlap_allowed_by_given_fact_passes() -> None:
     result = verify_reply(ROLE.secret, ROLE.secret, ROLE)
 
     assert result.ok is True
+
+@pytest.mark.parametrize(
+    "draft",
+    [
+        "我一推门就看见她出来。",
+        "我一直在这儿。",
+        "我们一起下的楼。",
+    ],
+)
+def test_bare_chinese_numerals_are_ignored(draft: str) -> None:
+    result = verify_reply(draft, ALLOWED, ROLE)
+
+    assert result.ok is True
+
+
+def test_bare_chinese_number_without_measure_is_ignored() -> None:
+    result = verify_reply("我数到三百。", ALLOWED, ROLE)
+
+    assert result.ok is True
+
+
+def test_chinese_time_with_half_is_rejected() -> None:
+    result = verify_reply("十点半，我看见她出来。", ALLOWED, ROLE)
+
+    assert result.ok is False
+    assert "十点半" in (result.reason or "")

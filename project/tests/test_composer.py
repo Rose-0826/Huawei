@@ -13,6 +13,7 @@ from app.engine.composer import (
     fallback_reply,
 )
 from app.engine.policy import Decision
+from app.llm import LLMUnavailable
 from app.models import Fact, Role, Script
 from app.script_loader import load_script
 
@@ -33,6 +34,15 @@ class FakeLLM:
         self.calls.append((system_prompt, user_prompt))
         index = min(len(self.calls) - 1, len(self.replies) - 1)
         return self.replies[index]
+
+
+class UnavailableLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        self.calls += 1
+        raise LLMUnavailable("timeout")
 
 
 @pytest.fixture(scope="module")
@@ -128,6 +138,17 @@ def test_system_prompt_contains_role_settings(script: Script) -> None:
     assert role.secret in prompt
     assert role.goal in prompt
     assert "周砚青" in prompt
+
+
+def test_system_prompt_contains_interrogator_context(
+    script: Script,
+) -> None:
+    prompt = build_system_prompt(_role(script, "r3"), script)
+
+    assert "单独问话" in prompt
+    assert "陈守义" in prompt
+    assert "不像住客" in prompt
+    assert "提防" in prompt
 
 
 def test_user_prompt_distinguishes_evade_states(script: Script) -> None:
@@ -285,3 +306,15 @@ def test_known_evade_cannot_answer_unknown(script: Script) -> None:
     assert result == "有些事，你还是别问得太细。"
     assert len(llm.calls) == 2
     assert "含糊" in llm.calls[1][1]
+
+def test_llm_unavailable_falls_back_without_retry(
+    script: Script,
+) -> None:
+    fact = _fact(script, "f05")
+    role = _role(script, "r3")
+    llm = UnavailableLLM()
+
+    result = compose(role, _disclose(fact), fact, script, llm)
+
+    assert result == fact.text + "。"
+    assert llm.calls == 1
