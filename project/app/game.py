@@ -5,7 +5,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from app.config import MAX_PRESSURE, MAX_QUESTION_CHARS, PRESSURE_PER_CLUE
+from app.config import (
+    CONFRONT_PRESSURE,
+    MAX_PRESSURE,
+    MAX_QUESTION_CHARS,
+    PRESSURE_PER_CLUE,
+)
 from app.engine.composer import compose
 from app.engine.confront import Alignment, Statement, compare_testimony
 from app.engine.intent import parse_intent
@@ -64,6 +69,7 @@ class ConfrontOutcome:
     replies: tuple[ConfrontReply, ...]
     alignment: Alignment | None
     unlocked_clues: tuple[Clue, ...]
+    pressure: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -177,7 +183,7 @@ def present_clue(
     clue_id: str,
     llm: LLMClient | None = None,
 ) -> AskOutcome:
-    """出示已解锁线索，增加目标压力并立即重答上一问。"""
+    """出示已解锁线索，增加压力并优先按线索对应事实重答。"""
     state = store.get(game_id)
     if state is None:
         return _ask_error("game_not_found")
@@ -202,6 +208,12 @@ def present_clue(
         MAX_PRESSURE,
         state.pressure.get(npc_id, 0.0) + PRESSURE_PER_CLUE,
     )
+    source_fact = _fact_index(state.script).get(clue.from_)
+    fact_override = (
+        source_fact
+        if source_fact is not None and npc_id in source_fact.holders
+        else None
+    )
     return _answer(
         state,
         role,
@@ -209,6 +221,7 @@ def present_clue(
         llm,
         clue=clue,
         exclude_answered=False,
+        fact_override=fact_override,
     )
 
 
@@ -237,10 +250,16 @@ def confront(
         return _confront_error("empty_question")
     if len(text) > MAX_QUESTION_CHARS:
         return _confront_error("question_too_long")
-    if any(state.last_questions.get(role.id) == text for role in (left, right)):
-        return _confront_error("confront_repeated_question")
+    for role in (left, right):
+        state.pressure[role.id] = min(
+            MAX_PRESSURE,
+            state.pressure.get(role.id, 0.0) + CONFRONT_PRESSURE,
+        )
 
-    outcomes = [_answer(state, role, text, llm) for role in (left, right)]
+    outcomes = [
+        _answer(state, role, text, llm, exclude_answered=True)
+        for role in (left, right)
+    ]
     left_decision = outcomes[0].decision
     right_decision = outcomes[1].decision
     if left_decision is None or right_decision is None:
@@ -276,6 +295,10 @@ def confront(
         replies=replies,
         alignment=alignment,
         unlocked_clues=unlocked,
+        pressure={
+            role.id: state.pressure.get(role.id, 0.0)
+            for role in (left, right)
+        },
     )
 
 
@@ -369,20 +392,24 @@ def _answer(
     llm: LLMClient | None,
     clue: Clue | None = None,
     exclude_answered: bool = True,
+    fact_override: Fact | None = None,
 ) -> AskOutcome:
     intent = parse_intent(question)
-    exclude_ids = (
-        state.answered_fact_ids.get(role.id, [])
-        if exclude_answered
-        else []
-    )
-    candidates = retrieve(
-        state.script,
-        role.id,
-        intent,
-        exclude_ids=exclude_ids,
-    )
-    fact = candidates[0] if candidates else None
+    if fact_override is not None:
+        fact = fact_override
+    else:
+        exclude_ids = (
+            state.answered_fact_ids.get(role.id, [])
+            if exclude_answered
+            else []
+        )
+        candidates = retrieve(
+            state.script,
+            role.id,
+            intent,
+            exclude_ids=exclude_ids,
+        )
+        fact = candidates[0] if candidates else None
     pressure = state.pressure.get(role.id, 0.0)
     decision = decide(role, fact, intent, pressure)
     reply = compose(
@@ -442,6 +469,7 @@ def _confront_error(error: str) -> ConfrontOutcome:
         replies=(),
         alignment=None,
         unlocked_clues=(),
+        pressure={},
     )
 
 

@@ -415,6 +415,28 @@ def test_lie_prompt_omits_fact_text_and_allowed_text(script: Script) -> None:
     assert _allowed_text(decision, fact) == ""
 
 
+def test_lie_system_prompt_forbids_new_concrete_details(
+    script: Script,
+) -> None:
+    fact = _fact(script, "f11")
+    role = _role(script, "r1")
+    decision = Decision(
+        action="lie",
+        fact_id="f11",
+        content=None,
+        is_lie=True,
+        risk=0.9,
+    )
+    llm = FakeLLM(["那会儿我在忙自己的事，没留意别的。"])
+
+    compose(role, decision, fact, script, llm)
+
+    system_prompt, user_prompt = llm.calls[0]
+    assert fact.text not in user_prompt
+    assert "不得新增具体地点/气味/物件" in system_prompt
+    assert _allowed_text(decision, fact) == ""
+
+
 def test_lie_cannot_copy_fact_verbatim(script: Script) -> None:
     fact = _fact(script, "f07")
     role = _role(script, "r3")

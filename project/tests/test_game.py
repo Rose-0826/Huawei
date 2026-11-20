@@ -135,8 +135,9 @@ def test_present_clue_increases_pressure_and_reanswers(
     assert outcome.ok is True
     assert outcome.pressure == pytest.approx(0.25)
     assert outcome.action == "disclose"
-    assert outcome.unlocked_clue is not None
-    assert outcome.unlocked_clue.id == "c01"
+    assert outcome.decision is not None
+    assert outcome.decision.fact_id == "f07"
+    assert outcome.unlocked_clue is None
     assert state.pressure["r3"] == pytest.approx(0.25)
     assert state.last_questions["r3"] == "那晚你看见什么"
 
@@ -307,7 +308,7 @@ def test_accuse_returns_truth_and_missed_facts(
     assert outcome.ok is True
     assert outcome.correct is True
     assert [fact.id for fact in outcome.timeline] == script.solution_path
-    assert outcome.missed_fact_ids == ("f06", "f08", "f15", "f16")
+    assert outcome.missed_fact_ids == ("f05", "f06", "f08", "f15", "f16")
     assert state.ended is True
     view = get_view(store, state.game_id)
     assert view is not None
@@ -348,7 +349,7 @@ def test_games_are_isolated(store: GameStore, script: Script) -> None:
     first_view = build_view(first)
     second_view = build_view(second)
 
-    assert [clue.id for clue in first_view.clues] == ["c03", "c01"]
+    assert [clue.id for clue in first_view.clues] == ["c03"]
     assert first_view.pressure["r3"] == pytest.approx(0.25)
     assert second_view.clues == ()
     assert second_view.pressure["r3"] == 0.0
@@ -550,3 +551,68 @@ def test_answered_fact_state_defaults_to_empty(
     state = store.start(script)
 
     assert state.answered_fact_ids == {}
+
+def test_present_c02_to_r1_answers_f06_instead_of_last_question(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    ask(store, state.game_id, "r2", "23:05 楼梯口碰见谁", FakeLLM())
+    ask(store, state.game_id, "r1", "22:45 之后你在哪儿", FakeLLM())
+
+    outcome = present_clue(
+        store,
+        state.game_id,
+        "r1",
+        "c02",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.decision is not None
+    assert outcome.decision.fact_id == "f06"
+    assert outcome.pressure == pytest.approx(0.25)
+
+
+def test_present_c03_to_r3_answers_f07(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    _ask_weapon(store, state.game_id)
+    ask(store, state.game_id, "r3", "那晚你看见什么", FakeLLM())
+
+    outcome = present_clue(
+        store,
+        state.game_id,
+        "r3",
+        "c03",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.decision is not None
+    assert outcome.decision.fact_id == "f07"
+
+
+def test_present_falls_back_when_npc_does_not_hold_clue_fact(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    ask(store, state.game_id, "r2", "23:05 楼梯口碰见谁", FakeLLM())
+    ask(store, state.game_id, "r3", "那晚你看见什么", FakeLLM())
+
+    outcome = present_clue(
+        store,
+        state.game_id,
+        "r3",
+        "c02",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.decision is not None
+    assert outcome.decision.fact_id == "f05"
+    assert outcome.decision.fact_id != "f06"
+    assert state.last_questions["r3"] == "那晚你看见什么"

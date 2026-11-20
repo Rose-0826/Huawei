@@ -107,11 +107,11 @@ def test_present_clue_updates_pressure_and_answers_immediately(
     data = response.json()
     assert data["reply"]
     assert data["pressure"] == pytest.approx(0.25)
-    assert data["unlocked_clue"]["id"] == "c01"
+    assert data["unlocked_clue"] is None
 
     state = client.get(f"/games/{game_id}").json()
     assert state["pressure"]["r3"] == pytest.approx(0.25)
-    assert [clue["id"] for clue in state["clues"]] == ["c03", "c01"]
+    assert [clue["id"] for clue in state["clues"]] == ["c03"]
 
 
 def test_duplicate_clue_to_same_npc_returns_409(
@@ -273,7 +273,13 @@ def test_accuse_returns_timeline_and_missed_ids(client: TestClient) -> None:
         "f15",
         "f16",
     ]
-    assert set(data["missed_fact_ids"]) == {"f06", "f08", "f15", "f16"}
+    assert set(data["missed_fact_ids"]) == {
+        "f05",
+        "f06",
+        "f08",
+        "f15",
+        "f16",
+    }
     assert "culprit" not in data
     assert "secret" not in response.text
 

@@ -115,6 +115,7 @@ class ConfrontResponse(APIModel):
     alignment: str
     replies: list[ConfrontReplyPublic]
     unlocked_clues: list[CluePublic]
+    pressure: dict[str, float]
 
 
 class AccuseRequest(APIModel):
@@ -149,10 +150,7 @@ GAME_ERRORS: dict[str, tuple[int, str]] = {
     "empty_question": (422, "问题不能为空"),
     "question_too_long": (422, f"问题不能超过 {MAX_QUESTION_CHARS} 字"),
     "confront_needs_two": (422, "对质需要两个不同的人"),
-    "confront_repeated_question": (
-        409,
-        "这句刚问过其中一人，换个问法再对质",
-    ),
+
     "confront_failed": (500, "两人的回答没有形成可比的口径"),
 }
 
@@ -231,6 +229,7 @@ def create_app(
             unlocked_clues=[
                 _clue_public(clue) for clue in outcome.unlocked_clues
             ],
+            pressure=dict(outcome.pressure),
         )
 
     @application.get(

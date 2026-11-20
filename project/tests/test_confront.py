@@ -166,7 +166,7 @@ def test_c3_both_evade_is_unclear(
     assert outcome.alignment == "unclear"
 
 
-def test_confront_returns_two_replies_without_pressure(
+def test_confront_returns_two_replies_and_charges_pressure(
     store: GameStore,
     script: Script,
 ) -> None:
@@ -184,10 +184,82 @@ def test_confront_returns_two_replies_without_pressure(
     assert outcome.alignment in {"aligned", "conflicting", "unclear"}
     assert [reply.npc_id for reply in outcome.replies] == ["r2", "r3"]
     assert all(reply.reply for reply in outcome.replies)
-    assert state.pressure.get("r2", 0.0) == 0.0
-    assert state.pressure.get("r3", 0.0) == 0.0
+    assert state.pressure["r2"] == pytest.approx(0.10)
+    assert state.pressure["r3"] == pytest.approx(0.10)
+    assert outcome.pressure == {
+        "r2": pytest.approx(0.10),
+        "r3": pytest.approx(0.10),
+    }
     assert state.last_questions["r2"] == "22:30 前后书房里的争吵"
     assert state.last_questions["r3"] == "22:30 前后书房里的争吵"
+
+
+def test_repeated_confront_is_not_free(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    for _ in range(7):
+        outcome = confront(
+            store,
+            state.game_id,
+            ("r2", "r3"),
+            "22:30 前后书房里的争吵",
+            FakeLLM(),
+        )
+        assert outcome.ok is True
+
+    assert state.pressure["r2"] == pytest.approx(0.70)
+    assert state.pressure["r3"] == pytest.approx(0.70)
+
+
+def test_confront_pressure_caps_at_one(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    for _ in range(12):
+        outcome = confront(
+            store,
+            state.game_id,
+            ("r2", "r3"),
+            "22:30 前后书房里的争吵",
+            FakeLLM(),
+        )
+        assert outcome.ok is True
+
+    assert state.pressure["r2"] == pytest.approx(1.0)
+    assert state.pressure["r3"] == pytest.approx(1.0)
+    assert outcome.pressure == {
+        "r2": pytest.approx(1.0),
+        "r3": pytest.approx(1.0),
+    }
+
+
+def test_confront_prefers_new_fact_after_single_ask(
+    store: GameStore,
+    script: Script,
+) -> None:
+    """先单问 f01，同话题对质应换到 f02，不得逐字复读旧事实。"""
+    state = store.start(script)
+    llm = FakeLLM()
+    ask(store, state.game_id, "r3", "22:15 陈守义叫谁去书房", llm)
+
+    outcome = confront(
+        store,
+        state.game_id,
+        ("r3", "r2"),
+        "22:30 之后你看见什么",
+        llm,
+    )
+
+    assert outcome.ok is True
+    assert state.answered_fact_ids["r3"][0] == "f01"
+    assert state.answered_fact_ids["r3"][1] == "f02"
+    assert "22:30" in llm.calls[1][1]
+    assert "22:15" not in llm.calls[1][1]
 
 
 def test_confront_validation(
@@ -252,16 +324,23 @@ def test_confront_endpoint_returns_alignment(client: TestClient) -> None:
 
     assert response.status_code == 200
     data = response.json()
-    assert set(data) == {"alignment", "replies", "unlocked_clues"}
+    assert set(data) == {
+        "alignment",
+        "replies",
+        "unlocked_clues",
+        "pressure",
+    }
     assert data["alignment"] in {"aligned", "conflicting", "unclear"}
     assert [reply["npc_id"] for reply in data["replies"]] == ["r2", "r3"]
     assert all(reply["reply"] for reply in data["replies"])
+    assert data["pressure"]["r2"] == pytest.approx(0.10)
+    assert data["pressure"]["r3"] == pytest.approx(0.10)
     assert "is_lie" not in response.text
     assert "action" not in response.text
 
     state = client.get(f"/games/{game_id}").json()
-    assert state["pressure"]["r2"] == 0.0
-    assert state["pressure"]["r3"] == 0.0
+    assert state["pressure"]["r2"] == pytest.approx(0.10)
+    assert state["pressure"]["r3"] == pytest.approx(0.10)
 
 
 def test_confront_endpoint_rejects_same_person(client: TestClient) -> None:
@@ -286,10 +365,11 @@ def test_confront_endpoint_requires_two_ids(client: TestClient) -> None:
 
     assert response.status_code == 422
 
-def test_confront_rejects_repeated_question(
+def test_confront_allows_same_question_after_single_ask(
     store: GameStore,
     script: Script,
 ) -> None:
+    """先单问再对质同一句不应被整组拒绝，成本交给压力。"""
     state = store.start(script)
     question = "争吵什么时候停的"
     ask(store, state.game_id, "r2", question, FakeLLM())
@@ -302,12 +382,13 @@ def test_confront_rejects_repeated_question(
         FakeLLM(),
     )
 
-    assert outcome.ok is False
-    assert outcome.error == "confront_repeated_question"
-    assert outcome.alignment is None
+    assert outcome.ok is True
+    assert outcome.error is None
+    assert outcome.alignment in {"aligned", "conflicting", "unclear"}
+    assert state.pressure["r2"] == pytest.approx(0.10)
 
 
-def test_confront_repeat_endpoint_returns_409(
+def test_confront_repeat_endpoint_is_not_409(
     client: TestClient,
 ) -> None:
     game_id = client.post("/games").json()["game_id"]
@@ -317,13 +398,19 @@ def test_confront_repeat_endpoint_returns_409(
         json={"npc_id": "r2", "question": question},
     )
 
-    response = client.post(
+    first = client.post(
+        f"/games/{game_id}/confront",
+        json={"npc_ids": ["r2", "r3"], "question": question},
+    )
+    second = client.post(
         f"/games/{game_id}/confront",
         json={"npc_ids": ["r2", "r3"], "question": question},
     )
 
-    assert response.status_code == 409
-    assert "换个问法" in response.json()["detail"]
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["pressure"]["r2"] == pytest.approx(0.10)
+    assert second.json()["pressure"]["r2"] == pytest.approx(0.20)
 
 
 def test_k6_different_facts_both_lie_is_unclear(

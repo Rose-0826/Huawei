@@ -205,12 +205,15 @@ def test_two_clues_make_ahuang_disclose(
         FakeLLM(),
     )
 
-    assert first.action == "evade"
+    assert first.action == "disclose"
+    assert first.decision is not None
+    assert first.decision.fact_id == "f07"
     assert first.pressure == pytest.approx(0.25)
     assert second.action == "disclose"
+    assert second.decision is not None
+    assert second.decision.fact_id == "f02"
     assert second.pressure == pytest.approx(0.5)
-    assert second.unlocked_clue is not None
-    assert second.unlocked_clue.id == "c01"
+    assert second.unlocked_clue is None
 
 
 def test_llm_unavailable_falls_back_after_one_call(
