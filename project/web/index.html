@@ -58,7 +58,7 @@
         <span id="confront-say-b" class="confront-say"></span>
       </div>
       <div class="confront-history" aria-label="先前对质">
-        <p class="confront-history-title">先前对质</p>
+        <p class="confront-history-title">对质记录</p>
         <ol class="confront-history-list"></ol>
       </div>
       <p id="confront-verdict" class="confront-verdict"></p>
@@ -98,7 +98,7 @@
 
       <div class="desk">
         <section class="hand" aria-label="手边物证">
-          <div class="hand-title">手边 · 物证<span class="hand-hint">点纸片查看</span></div>
+          <div class="hand-title">手边 · 物证<span id="hand-hint" class="hand-hint">点纸片查看详情</span></div>
           <div id="clue-hand" class="clue-hand"></div>
           <button id="present-button" class="present-button hidden" type="button">出示</button>
           <p id="present-target" class="present-target"></p>
@@ -107,7 +107,8 @@
         <section class="ask-desk" aria-label="问话">
           <div class="ask-row">
             <p id="last-question" class="last-question"></p>
-            <button id="confront-toggle" class="confront-toggle" type="button">对质</button>
+            <button id="confront-toggle" class="confront-toggle" type="button"
+                    aria-pressed="false">对质</button>
           </div>
           <form id="ask-form" class="ask-form" autocomplete="off">
             <input id="question-input" type="text" maxlength="200"

@@ -8,6 +8,7 @@ const state = {
   currentNpcId: null,
   selectedClueId: null,
   seenClues: new Set(),
+  askedNpcIds: new Set(),
   confrontMode: false,
   confrontIds: [],
   confrontHistory: [],
@@ -192,13 +193,20 @@ function renderSideRail() {
 
 function renderClues() {
   const hand = $("#clue-hand");
+  const hint = $("#hand-hint");
   hand.innerHTML = "";
   if (state.clues.length === 0) {
+    if (hint) {
+      hint.classList.add("hidden");
+    }
     hand.appendChild(
       element("p", "empty-hand", "手边还没有证物。追问细节，可能换来一张纸。")
     );
     refreshControls();
     return;
+  }
+  if (hint) {
+    hint.classList.remove("hidden");
   }
 
   const tilts = [-4, 2, -1, 3, -2, 1];
@@ -353,12 +361,10 @@ function toggleConfrontMode() {
   state.confrontIds = [];
   const toggle = $("#confront-toggle");
   toggle.classList.toggle("active", state.confrontMode);
+  toggle.setAttribute("aria-pressed", String(state.confrontMode));
   toggle.textContent = state.confrontMode ? "退出对质" : "对质";
   $("#send-button").textContent = state.confrontMode ? "对" : "问";
   clearConfrontLog();
-  if (!state.confrontMode) {
-    clearConfrontHistory();
-  }
   $("#speech").classList.remove("hidden");
   if (state.confrontMode) {
     updateConfrontPlaceholder();
@@ -379,7 +385,9 @@ function clearConfrontLog() {
     return;
   }
   log.classList.add("hidden");
-  $("#confront-question-echo").textContent = "";
+  const echo = $("#confront-question-echo");
+  echo.textContent = "";
+  echo.removeAttribute("title");
   $("#confront-who-a").textContent = "";
   $("#confront-say-a").textContent = "";
   $("#confront-who-b").textContent = "";
@@ -399,14 +407,21 @@ function renderConfrontHistory() {
   }
   list.innerHTML = "";
   for (const entry of state.confrontHistory) {
-    const item = element("li", "", "");
-    const first = entry.replies[0];
-    const second = entry.replies[1];
-    const verdict = CONFRONT_VERDICTS[entry.alignment] || "说不清";
-    item.textContent =
-      `「${entry.question}」` +
-      `${first.name}：${first.reply} ｜ ` +
-      `${second.name}：${second.reply} —— ${verdict}`;
+    const item = element("li", "confront-history-item");
+    item.appendChild(element("p", "history-question", `「${entry.question}」`));
+    for (const reply of entry.replies) {
+      const line = element("p", "history-reply");
+      line.appendChild(element("span", "history-who", `${reply.name}：`));
+      line.appendChild(element("span", "history-say", reply.reply));
+      item.appendChild(line);
+    }
+    const verdict = element(
+      "p",
+      "history-verdict",
+      `— ${CONFRONT_VERDICTS[entry.alignment] || "说不清"}`
+    );
+    verdict.dataset.alignment = entry.alignment || "unclear";
+    item.appendChild(verdict);
     list.appendChild(item);
   }
 }
@@ -418,6 +433,7 @@ function refreshControls() {
   const hasClue = Boolean(state.selectedClueId);
   const confronting = state.confrontMode;
   const twoPicked = state.confrontIds.length === 2;
+  const asked = Boolean(role) && state.askedNpcIds.has(role.id);
 
   $("#question-input").disabled = locked;
   if (confronting) {
@@ -432,12 +448,22 @@ function refreshControls() {
     "hidden",
     confronting || state.clues.length === 0
   );
-  $("#present-button").disabled = locked || !role || confronting || !hasClue;
-  $("#present-target").textContent = confronting || state.clues.length === 0
-    ? ""
-    : (role
-      ? (hasClue ? `递给 ${role.name}` : "先点一张物证")
-      : "先点左边一个人，再问");
+  $("#present-button").disabled = locked || !role || confronting || !hasClue || !asked;
+
+  let presentHint = "";
+  if (!confronting && state.clues.length !== 0) {
+    if (!role) {
+      presentHint = "先点左边一个人，再问";
+    } else if (!asked) {
+      presentHint = "先问一句，再出示";
+    } else if (!hasClue) {
+      presentHint = "先点一张物证";
+    } else {
+      presentHint = `递给 ${role.name}`;
+    }
+  }
+  $("#present-target").textContent = presentHint;
+  $("#present-button").title = presentHint;
 
   if (!role && !confronting) {
     $("#question-input").placeholder = "先点左边一个人，再问";
@@ -453,7 +479,16 @@ function selectClue(clueId) {
   if (slip) {
     slip.classList.remove("new");
   }
-  state.selectedClueId = state.selectedClueId === clueId ? null : clueId;
+  if (state.selectedClueId === clueId) {
+    state.selectedClueId = null;
+    hideTableEvidence();
+  } else {
+    state.selectedClueId = clueId;
+    const clue = state.clues.find((item) => item.id === clueId);
+    if (clue) {
+      showTableEvidence(clue, { pinned: true });
+    }
+  }
   document.querySelectorAll(".clue-slip").forEach((slip) => {
     slip.classList.toggle("selected", slip.dataset.clue === state.selectedClueId);
   });
@@ -478,19 +513,29 @@ function setPressure(npcId, value, animate = false) {
   recoilTimer = setTimeout(() => actor.classList.remove("recoiling"), 1800);
 }
 
-function showTableEvidence(clue) {
+function showTableEvidence(clue, options = {}) {
+  const { pinned = false, delta = 0 } = options;
   const box = $("#table-evidence");
   box.innerHTML = "";
   box.appendChild(
     element("span", "evidence-stamp", `物证 ${clueNumber(clue)}`)
   );
+  if (delta > 0) {
+    box.appendChild(
+      element("span", "evidence-delta", `压力 +${delta.toFixed(2)}`)
+    );
+  }
   box.appendChild(element("span", "evidence-name", clue.name));
   box.appendChild(element("p", "evidence-desc", clue.desc));
+  box.classList.toggle("pinned", pinned);
   box.classList.remove("hidden");
+  document.body.classList.add("evidence-open");
   requestAnimationFrame(() => box.classList.add("visible"));
   clearTimeout(evidenceTimer);
   clearTimeout(evidenceHideTimer);
-  evidenceTimer = setTimeout(hideTableEvidence, 2800);
+  if (!pinned) {
+    evidenceTimer = setTimeout(hideTableEvidence, 2800);
+  }
 }
 
 function hideTableEvidence() {
@@ -498,7 +543,9 @@ function hideTableEvidence() {
   if (!box) {
     return;
   }
-  box.classList.remove("visible");
+  clearTimeout(evidenceTimer);
+  box.classList.remove("visible", "pinned");
+  document.body.classList.remove("evidence-open");
   clearTimeout(evidenceHideTimer);
   evidenceHideTimer = setTimeout(() => box.classList.add("hidden"), 260);
 }
@@ -551,6 +598,7 @@ function renderConfront(data, question) {
     return;
   }
   $("#confront-question-echo").textContent = question;
+  $("#confront-question-echo").title = question;
   $("#confront-who-a").textContent = first.name;
   $("#confront-say-a").textContent = first.reply;
   $("#confront-who-b").textContent = second.name;
@@ -650,6 +698,7 @@ async function handleAsk(event) {
       body: JSON.stringify({ npc_id: role.id, question }),
     });
     setPressure(role.id, data.pressure, false);
+    state.askedNpcIds.add(role.id);
     if (data.unlocked_clue) {
       mergeClue(data.unlocked_clue);
     }
@@ -674,6 +723,10 @@ async function handlePresent() {
     toast("先选一个人", "warn");
     return;
   }
+  if (!state.askedNpcIds.has(role.id)) {
+    toast("先问一句，再出示", "warn");
+    return;
+  }
   if (!clue) {
     toast("先点一张物证", "warn");
     return;
@@ -681,16 +734,12 @@ async function handlePresent() {
 
   presentToken += 1;
   const token = presentToken;
+  const pressureBefore = state.pressure[role.id] ?? 0;
   state.busy = true;
   refreshControls();
   $("#actor").classList.add("looking");
   clearTimeout(lookTimer);
   lookTimer = setTimeout(() => $("#actor").classList.remove("looking"), 2600);
-  flyClue(clue, () => {
-    if (token === presentToken) {
-      showTableEvidence(clue);
-    }
-  });
 
   try {
     const data = await api(`/games/${state.gameId}/clues`, {
@@ -701,13 +750,24 @@ async function handlePresent() {
     if (data.unlocked_clue) {
       mergeClue(data.unlocked_clue);
     }
+    if (token === presentToken) {
+      flyClue(clue, () => {
+        if (token === presentToken) {
+          const delta = (data.pressure ?? pressureBefore) - pressureBefore;
+          showTableEvidence(clue, { pinned: true, delta });
+        }
+      });
+    }
     await speak(data.reply);
     state.selectedClueId = null;
     renderClues();
   } catch (error) {
     presentToken += 1;
-    hideTableEvidence();
+    clearTimeout(lookTimer);
     $("#actor").classList.remove("looking");
+    state.selectedClueId = null;
+    renderClues();
+    hideTableEvidence();
     if (error.status === 409) {
       toast(error.detail || "这张线索你已经给他看过了", "warn");
     } else {
@@ -844,6 +904,7 @@ function resetUI() {
   state.currentNpcId = null;
   state.selectedClueId = null;
   state.seenClues = new Set();
+  state.askedNpcIds = new Set();
   state.confrontHistory = [];
   state.busy = false;
   state.ended = false;
@@ -863,6 +924,7 @@ function resetUI() {
   state.confrontMode = false;
   state.confrontIds = [];
   $("#confront-toggle").classList.remove("active");
+  $("#confront-toggle").setAttribute("aria-pressed", "false");
   $("#confront-toggle").textContent = "对质";
   $("#send-button").textContent = "问";
   clearConfrontLog();
@@ -871,7 +933,8 @@ function resetUI() {
   $("#present-button").classList.add("hidden");
   $("#present-target").textContent = "";
   $("#table-evidence").classList.add("hidden");
-  $("#table-evidence").classList.remove("visible");
+  $("#table-evidence").classList.remove("visible", "pinned");
+  document.body.classList.remove("evidence-open");
   $("#table-evidence").innerHTML = "";
   $("#actor-name").textContent = "";
   $("#actor-public").textContent = "";
