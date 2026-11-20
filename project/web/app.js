@@ -10,6 +10,7 @@ const state = {
   seenClues: new Set(),
   confrontMode: false,
   confrontIds: [],
+  confrontHistory: [],
   busy: false,
   ended: false,
   accuseArmed: false,
@@ -193,7 +194,9 @@ function renderClues() {
   const hand = $("#clue-hand");
   hand.innerHTML = "";
   if (state.clues.length === 0) {
-    hand.appendChild(element("p", "empty-hand", "手边还没有证物。"));
+    hand.appendChild(
+      element("p", "empty-hand", "手边还没有证物。追问细节，可能换来一张纸。")
+    );
     refreshControls();
     return;
   }
@@ -219,7 +222,7 @@ function renderClues() {
     hand.appendChild(slip);
   });
 
-  state.seenClues = new Set(state.clues.map((clue) => clue.id));
+
   refreshControls();
 }
 
@@ -353,12 +356,17 @@ function toggleConfrontMode() {
   toggle.textContent = state.confrontMode ? "退出对质" : "对质";
   $("#send-button").textContent = state.confrontMode ? "对" : "问";
   clearConfrontLog();
+  if (!state.confrontMode) {
+    clearConfrontHistory();
+  }
   $("#speech").classList.remove("hidden");
   if (state.confrontMode) {
     updateConfrontPlaceholder();
   } else {
     const role = currentRole();
-    $("#question-input").placeholder = role ? `问${role.name}……` : "你要问什么？";
+    $("#question-input").placeholder = role
+      ? `问${role.name}……`
+      : "先点左边一个人，再问";
   }
   renderSideRail();
   refreshControls();
@@ -371,11 +379,36 @@ function clearConfrontLog() {
     return;
   }
   log.classList.add("hidden");
+  $("#confront-question-echo").textContent = "";
   $("#confront-who-a").textContent = "";
   $("#confront-say-a").textContent = "";
   $("#confront-who-b").textContent = "";
   $("#confront-say-b").textContent = "";
   $("#confront-verdict").textContent = "";
+}
+
+function clearConfrontHistory() {
+  state.confrontHistory = [];
+  renderConfrontHistory();
+}
+
+function renderConfrontHistory() {
+  const list = $(".confront-history-list");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = "";
+  for (const entry of state.confrontHistory) {
+    const item = element("li", "", "");
+    const first = entry.replies[0];
+    const second = entry.replies[1];
+    const verdict = CONFRONT_VERDICTS[entry.alignment] || "说不清";
+    item.textContent =
+      `「${entry.question}」` +
+      `${first.name}：${first.reply} ｜ ` +
+      `${second.name}：${second.reply} —— ${verdict}`;
+    list.appendChild(item);
+  }
 }
 
 function refreshControls() {
@@ -397,21 +430,28 @@ function refreshControls() {
   $("#confront-toggle").disabled = locked;
   $("#present-button").classList.toggle(
     "hidden",
-    confronting || !hasClue
+    confronting || state.clues.length === 0
   );
-  $("#present-button").disabled = locked || !role || confronting;
-  $("#present-target").textContent = confronting || !hasClue
+  $("#present-button").disabled = locked || !role || confronting || !hasClue;
+  $("#present-target").textContent = confronting || state.clues.length === 0
     ? ""
-    : (role ? `递给 ${role.name}` : "先选一个人");
+    : (role
+      ? (hasClue ? `递给 ${role.name}` : "先点一张物证")
+      : "先点左边一个人，再问");
 
   if (!role && !confronting) {
-    $("#question-input").placeholder = "你要问什么？";
+    $("#question-input").placeholder = "先点左边一个人，再问";
   }
 }
 
 function selectClue(clueId) {
   if (state.busy || state.ended) {
     return;
+  }
+  state.seenClues.add(clueId);
+  const slip = document.querySelector(`.clue-slip[data-clue="${clueId}"]`);
+  if (slip) {
+    slip.classList.remove("new");
   }
   state.selectedClueId = state.selectedClueId === clueId ? null : clueId;
   document.querySelectorAll(".clue-slip").forEach((slip) => {
@@ -502,7 +542,7 @@ const CONFRONT_VERDICTS = {
   unclear: "两人都没把话说实",
 };
 
-function renderConfront(data) {
+function renderConfront(data, question) {
   const replies = Array.isArray(data.replies) ? data.replies : [];
   const first = replies[0];
   const second = replies[1];
@@ -510,6 +550,7 @@ function renderConfront(data) {
     toast("两人的回答没有对上", "warn");
     return;
   }
+  $("#confront-question-echo").textContent = question;
   $("#confront-who-a").textContent = first.name;
   $("#confront-say-a").textContent = first.reply;
   $("#confront-who-b").textContent = second.name;
@@ -518,6 +559,13 @@ function renderConfront(data) {
   verdict.textContent = CONFRONT_VERDICTS[data.alignment] || "说不清";
   verdict.dataset.alignment = data.alignment || "unclear";
   $("#confront-log").classList.remove("hidden");
+  state.confrontHistory.push({
+    question,
+    replies: [first, second],
+    alignment: data.alignment || "unclear",
+  });
+  state.confrontHistory = state.confrontHistory.slice(-3);
+  renderConfrontHistory();
 }
 
 async function handleConfront(event) {
@@ -556,7 +604,7 @@ async function handleConfront(event) {
     for (const clue of data.unlocked_clues || []) {
       mergeClue(clue);
     }
-    renderConfront(data);
+    renderConfront(data, question);
   } catch (error) {
     toast(error.detail || "两人没有对上话", "warn");
     $("#speech").classList.remove("hidden");
@@ -750,9 +798,13 @@ function showVerdict(data, role) {
   const missed = Array.isArray(data.missed_fact_ids)
     ? data.missed_fact_ids
     : [];
-  $("#missed-summary").textContent = missed.length
-    ? `漏了 ${missed.length} 条破案链事实`
-    : "破案链已全部挖出";
+  if (missed.length && missed.length === facts.length) {
+    $("#missed-summary").textContent = "破案链一条都没挖出来";
+  } else if (missed.length) {
+    $("#missed-summary").textContent = `漏了 ${missed.length} 条破案链事实`;
+  } else {
+    $("#missed-summary").textContent = "破案链已全部挖出";
+  }
   const missedBox = $("#missed-ids");
   missedBox.innerHTML = "";
   missed.forEach((factId) => {
@@ -792,6 +844,7 @@ function resetUI() {
   state.currentNpcId = null;
   state.selectedClueId = null;
   state.seenClues = new Set();
+  state.confrontHistory = [];
   state.busy = false;
   state.ended = false;
   resetAccuseArm();
@@ -806,13 +859,14 @@ function resetUI() {
   $("#clue-hand").innerHTML = "";
   $("#last-question").textContent = "";
   $("#question-input").value = "";
-  $("#question-input").placeholder = "你要问什么？";
+  $("#question-input").placeholder = "先点左边一个人，再问";
   state.confrontMode = false;
   state.confrontIds = [];
   $("#confront-toggle").classList.remove("active");
   $("#confront-toggle").textContent = "对质";
   $("#send-button").textContent = "问";
   clearConfrontLog();
+  clearConfrontHistory();
   $("#speech").classList.remove("hidden");
   $("#present-button").classList.add("hidden");
   $("#present-target").textContent = "";
