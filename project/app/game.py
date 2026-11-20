@@ -14,6 +14,8 @@ from app.engine.retrieval import retrieve
 from app.llm import LLMClient
 from app.models import Clue, Fact, Role, Script
 
+REPEATED_QUESTION_REPLY = "这个他刚说过了。"
+
 
 @dataclass
 class GameState:
@@ -155,6 +157,15 @@ def ask(
         return _ask_error("empty_question")
     if len(text) > MAX_QUESTION_CHARS:
         return _ask_error("question_too_long")
+    if state.last_questions.get(npc_id) == text:
+        return AskOutcome(
+            ok=True,
+            error=None,
+            reply=REPEATED_QUESTION_REPLY,
+            pressure=state.pressure.get(npc_id, 0.0),
+            unlocked_clue=None,
+            action=None,
+        )
     return _answer(state, role, text, llm)
 
 

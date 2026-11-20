@@ -70,18 +70,19 @@ def test_same_fact_different_memory_conflicts() -> None:
     assert compare_testimony(left, right) == "conflicting"
 
 
-def test_different_facts_conflict() -> None:
+def test_different_facts_is_unclear() -> None:
     left = Statement("disclose", "f02", "甲")
     right = Statement("disclose", "f05", "乙")
 
-    assert compare_testimony(left, right) == "conflicting"
+    assert compare_testimony(left, right) == "unclear"
 
 
-def test_one_speaks_one_stays_quiet_conflicts() -> None:
+def test_one_speaks_one_stays_quiet_is_unclear() -> None:
+    """需求变更：只说一方无法构成矛盾，降级为说不清。"""
     left = Statement("disclose", "f02", "甲")
     right = Statement("evade", "f02", None)
 
-    assert compare_testimony(left, right) == "conflicting"
+    assert compare_testimony(left, right) == "unclear"
 
 
 def test_both_quiet_is_unclear() -> None:
@@ -96,6 +97,59 @@ def test_both_lie_conflicts() -> None:
     right = Statement("lie", "f02", None)
 
     assert compare_testimony(left, right) == "conflicting"
+
+
+def test_lie_against_disclose_conflicts() -> None:
+    left = Statement("lie", "f02", None)
+    right = Statement("disclose", "f02", "甲")
+
+    assert compare_testimony(left, right) == "conflicting"
+
+
+def test_lie_against_quiet_is_unclear() -> None:
+    left = Statement("lie", "f02", None)
+    right = Statement("evade", "f02", None)
+
+    assert compare_testimony(left, right) == "unclear"
+
+
+def test_c2_one_deflects_one_answers_is_unclear(
+    store: GameStore,
+    script: Script,
+) -> None:
+    """C2：r2 手里没有拨火棍的知识，r3 如实回答，只算说不清。"""
+    state = store.start(script)
+
+    outcome = confront(
+        store,
+        state.game_id,
+        ("r2", "r3"),
+        "壁炉边的拨火棍呢",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.alignment == "unclear"
+    assert all(reply.reply for reply in outcome.replies)
+
+
+def test_c3_both_evade_is_unclear(
+    store: GameStore,
+    script: Script,
+) -> None:
+    """C3：两人都不知道凶器，谁也没给出可比口径。"""
+    state = store.start(script)
+
+    outcome = confront(
+        store,
+        state.game_id,
+        ("r2", "r5"),
+        "凶器是什么",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.alignment == "unclear"
 
 
 def test_confront_returns_two_replies_without_pressure(

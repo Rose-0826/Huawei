@@ -175,6 +175,15 @@ def _cross_validate(script: Script) -> list[ScriptIssue]:
                         f"持有者 {holder_id} 不是已定义的角色 id",
                     )
                 )
+        for holder_id in fact.risk_by_holder:
+            if holder_id not in fact.holders:
+                issues.append(
+                    ScriptIssue(
+                        f"facts[{fact.id}].risk_by_holder.{holder_id}",
+                        f"{holder_id} 不在这条事实的 holders 里，"
+                        "单独风险不会被用到",
+                    )
+                )
         for npc_id in fact.belief:
             if npc_id not in roles:
                 issues.append(

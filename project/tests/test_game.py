@@ -10,6 +10,7 @@ import pytest
 
 from app.config import MAX_QUESTION_CHARS
 from app.game import (
+    REPEATED_QUESTION_REPLY,
     GameStore,
     accuse,
     ask,
@@ -363,3 +364,88 @@ def test_view_excludes_secrets_and_solution(store: GameStore, script: Script) ->
     assert "secret" not in str(payload)
     assert "alibi" not in str(payload)
     assert set(payload["roles"][0]) == {"id", "name", "public"}
+
+def test_r5_discloses_silver_at_zero_pressure(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    outcome = ask(
+        store,
+        state.game_id,
+        "r5",
+        "那包银元是谁给的",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.action == "disclose"
+    assert outcome.decision is not None
+    assert outcome.decision.fact_id == "f11"
+    assert outcome.unlocked_clue is not None
+    assert outcome.unlocked_clue.id == "c07"
+
+
+def test_r1_does_not_disclose_silver_at_zero_pressure(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    outcome = ask(
+        store,
+        state.game_id,
+        "r1",
+        "那包银元是谁给的",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.action != "disclose"
+    assert outcome.unlocked_clue is None
+    assert "c07" not in state.unlocked_clue_ids
+
+
+def test_repeated_question_does_not_call_llm_or_raise_pressure(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    llm = FakeLLM()
+    question = "壁炉边的拨火棍呢"
+
+    first = ask(store, state.game_id, "r3", question, llm)
+    calls_after_first = len(llm.calls)
+    second = ask(store, state.game_id, "r3", question, llm)
+
+    assert first.ok is True
+    assert second.ok is True
+    assert second.reply == REPEATED_QUESTION_REPLY
+    assert len(llm.calls) == calls_after_first
+    assert state.pressure.get("r3", 0.0) == 0.0
+    assert state.last_questions["r3"] == question
+
+
+def test_present_after_repeat_still_reanswers(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    question = "那晚你看见什么"
+    ask(store, state.game_id, "r3", question, FakeLLM())
+    ask(store, state.game_id, "r3", question, FakeLLM())
+    state.unlocked_clue_ids.append("c03")
+
+    outcome = present_clue(
+        store,
+        state.game_id,
+        "r3",
+        "c03",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.pressure == pytest.approx(0.25)
+    assert outcome.reply
+    assert outcome.reply != REPEATED_QUESTION_REPLY

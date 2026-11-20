@@ -28,9 +28,17 @@ def compare_testimony(left: Statement, right: Statement) -> Alignment:
     if left.action == "lie" and right.action == "lie":
         return "conflicting"
     if left.action == "disclose" and right.action == "disclose":
-        if left.fact_id is None or left.fact_id != right.fact_id:
-            return "conflicting"
-        if left.content is not None and left.content == right.content:
-            return "aligned"
-        return "conflicting"
+        return _compare_disclosures(left, right)
+    if "disclose" in (left.action, right.action):
+        other = right if left.action == "disclose" else left
+        return "conflicting" if other.action == "lie" else "unclear"
+    return "unclear"
+
+
+def _compare_disclosures(left: Statement, right: Statement) -> Alignment:
+    """比较两份如实披露：topic 不同只算说不清，同一条事实才看措辞。"""
+    if left.fact_id is None or left.fact_id != right.fact_id:
+        return "unclear"
+    if left.content == right.content:
+        return "aligned"
     return "conflicting"

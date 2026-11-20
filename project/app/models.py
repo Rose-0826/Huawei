@@ -52,6 +52,7 @@ class Fact(ScriptModel):
     topic: list[Topic]
     holders: list[NonEmptyStr]
     sensitivity: UnitFloat
+    risk_by_holder: dict[NonEmptyStr, UnitFloat] = Field(default_factory=dict)
     belief: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
     source_of_error: NonEmptyStr | None = None
 

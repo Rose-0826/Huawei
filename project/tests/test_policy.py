@@ -230,3 +230,27 @@ def test_lie_propensity_only_changes_protection_style(
     assert liar_decision.risk == honest_decision.risk
     assert liar_decision.action == "lie"
     assert honest_decision.action == "evade"
+
+def test_risk_by_holder_overrides_base_sensitivity(script: Script) -> None:
+    """f11 对收钱的老韩是低风险，对给钱的沈玉兰是高风险的。"""
+    fact = _fact(script, "f11")
+    intent = parse_intent("那包银元是谁给的")
+
+    paid = decide(_role(script, "r5"), fact, intent, 0.0)
+    payer = decide(_role(script, "r1"), fact, intent, 0.0)
+
+    assert paid.action == "disclose"
+    assert paid.content == fact.text
+    assert payer.action != "disclose"
+    assert payer.fact_id == "f11"
+    assert payer.risk == pytest.approx(0.9)
+
+
+def test_risk_by_holder_falls_back_to_sensitivity(script: Script) -> None:
+    fact = _fact(script, "f11")
+    other = _role(script, "r3")
+
+    decision = decide(other, fact, parse_intent("银元"), 0.0)
+
+    assert decision.fact_id is None
+    assert decision.action == "evade"

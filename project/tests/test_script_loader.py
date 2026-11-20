@@ -341,6 +341,41 @@ def test_cli_returns_one_on_invalid_json(
     assert exit_code == 1
     assert "剧本不是合法 JSON" in captured.err
 
+def test_risk_by_holder_must_target_holder(valid_data: dict) -> None:
+    _fact(valid_data, "f11")["risk_by_holder"]["r2"] = 0.9
+
+    with pytest.raises(ScriptValidationError) as raised:
+        parse_script(valid_data)
+
+    _assert_issue(
+        raised.value,
+        "facts[f11].risk_by_holder.r2",
+        "holders",
+    )
+
+
+def test_risk_by_holder_value_must_be_unit(valid_data: dict) -> None:
+    _fact(valid_data, "f11")["risk_by_holder"]["r5"] = 1.5
+
+    with pytest.raises(ScriptValidationError) as raised:
+        parse_script(valid_data)
+
+    _assert_issue(
+        raised.value,
+        "facts[f11].risk_by_holder.r5",
+        "小于等于 1",
+    )
+
+
+def test_real_script_f11_knows_payer_and_taker() -> None:
+    script = load_script(SCRIPT_PATH)
+    f11 = next(fact for fact in script.facts if fact.id == "f11")
+
+    assert f11.holders == ["r1", "r5"]
+    assert f11.sensitivity == 0.5
+    assert f11.risk_by_holder == {"r1": 0.9, "r5": 0.5}
+
+
 def test_topic_values_match_schema() -> None:
     assert set(get_args(Topic)) == set(TOPICS)
 
