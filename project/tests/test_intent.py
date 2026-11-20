@@ -61,6 +61,8 @@ def test_ambiguous_questions_have_no_topic(question: str) -> None:
         ("那场火是谁放的", ("motive",)),
         ("你妻子认识他吗", ("relation",)),
         ("你们吵架了吗", ("event",)),
+        ("账本拿来我看看", ("motive", "relation")),
+        ("把那本登记簿给我看看", ("motive", "event")),
     ],
 )
 def test_replacement_double_char_keywords_still_match(
@@ -68,3 +70,19 @@ def test_replacement_double_char_keywords_still_match(
     topics: tuple[str, ...],
 ) -> None:
     assert parse_intent(question).topics == topics
+
+
+@pytest.mark.parametrize(
+    ("question", "keyword"),
+    [
+        ("22:30 前后是不是在吵架？", "争吵"),
+        ("案发之后他给过你钱吗", "银元"),
+        ("账本上记了什么", "对账"),
+        ("登记簿还在不在", "登记记录"),
+    ],
+)
+def test_synonym_groups_expand_keywords(
+    question: str,
+    keyword: str,
+) -> None:
+    assert keyword in parse_intent(question).keywords

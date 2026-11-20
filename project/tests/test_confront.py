@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import MAX_QUESTION_CHARS
 from app.engine.confront import Statement, compare_testimony
-from app.game import GameStore, accuse, confront
+from app.game import GameStore, accuse, ask, confront
 from app.main import create_app
 from app.models import Script
 from app.script_loader import load_script
@@ -99,11 +99,25 @@ def test_both_lie_conflicts() -> None:
     assert compare_testimony(left, right) == "conflicting"
 
 
+def test_both_lie_different_facts_is_unclear() -> None:
+    left = Statement("lie", "f11", None)
+    right = Statement("lie", "f12", None)
+
+    assert compare_testimony(left, right) == "unclear"
+
+
 def test_lie_against_disclose_conflicts() -> None:
     left = Statement("lie", "f02", None)
     right = Statement("disclose", "f02", "甲")
 
     assert compare_testimony(left, right) == "conflicting"
+
+
+def test_lie_against_disclose_different_facts_is_unclear() -> None:
+    left = Statement("lie", "f11", None)
+    right = Statement("disclose", "f14", "甲")
+
+    assert compare_testimony(left, right) == "unclear"
 
 
 def test_lie_against_quiet_is_unclear() -> None:
@@ -271,3 +285,76 @@ def test_confront_endpoint_requires_two_ids(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+def test_confront_rejects_repeated_question(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    question = "争吵什么时候停的"
+    ask(store, state.game_id, "r2", question, FakeLLM())
+
+    outcome = confront(
+        store,
+        state.game_id,
+        ("r2", "r3"),
+        question,
+        FakeLLM(),
+    )
+
+    assert outcome.ok is False
+    assert outcome.error == "confront_repeated_question"
+    assert outcome.alignment is None
+
+
+def test_confront_repeat_endpoint_returns_409(
+    client: TestClient,
+) -> None:
+    game_id = client.post("/games").json()["game_id"]
+    question = "争吵什么时候停的"
+    client.post(
+        f"/games/{game_id}/ask",
+        json={"npc_id": "r2", "question": question},
+    )
+
+    response = client.post(
+        f"/games/{game_id}/confront",
+        json={"npc_ids": ["r2", "r3"], "question": question},
+    )
+
+    assert response.status_code == 409
+    assert "换个问法" in response.json()["detail"]
+
+
+def test_k6_different_facts_both_lie_is_unclear(
+    client: TestClient,
+) -> None:
+    game_id = client.post("/games").json()["game_id"]
+
+    response = client.post(
+        f"/games/{game_id}/confront",
+        json={
+            "npc_ids": ["r1", "r2"],
+            "question": "老板娘是不是塞给你一包银元，让你别说她上过二楼？",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["alignment"] == "unclear"
+
+
+def test_k5_same_fact_conflict_still_conflicting(
+    client: TestClient,
+) -> None:
+    game_id = client.post("/games").json()["game_id"]
+
+    response = client.post(
+        f"/games/{game_id}/confront",
+        json={
+            "npc_ids": ["r1", "r5"],
+            "question": "老板娘是不是塞给你一包银元，让你别说她上过二楼？",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["alignment"] == "conflicting"

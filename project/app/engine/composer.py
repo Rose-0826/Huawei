@@ -8,7 +8,7 @@ from app.config import MAX_REPLY_CHARS, MAX_REWRITE_ATTEMPTS
 from app.engine.policy import Decision
 from app.engine.verifier import verify_reply
 from app.llm import LLMClient, LLMUnavailable, get_llm
-from app.models import Fact, Role, Script
+from app.models import Clue, Fact, Role, Script
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +27,17 @@ def compose(
     fact: Fact | None,
     script: Script,
     llm: LLMClient | None = None,
+    clue: Clue | None = None,
 ) -> str:
     """根据决策生成角色台词，校验失败时重写并用模板兜底。"""
     client = llm or get_llm()
     allowed_text = _allowed_text(decision, fact)
+    if clue is not None:
+        allowed_text = "\n".join(
+            part for part in (allowed_text, clue.name, clue.desc) if part
+        )
     system_prompt = build_system_prompt(role, script)
-    user_prompt = build_user_prompt(decision, fact)
+    user_prompt = build_user_prompt(decision, fact, clue)
     current_prompt = user_prompt
 
     for attempt in range(MAX_REWRITE_ATTEMPTS + 1):
@@ -45,7 +50,7 @@ def compose(
         failure = (
             verification.reason
             if not verification.ok
-            else _action_issue(draft, decision)
+            else _action_issue(draft, decision, fact)
         )
         if failure is None:
             return draft.strip()
@@ -98,18 +103,31 @@ def build_system_prompt(role: Role, script: Script) -> str:
     )
 
 
-def build_user_prompt(decision: Decision, fact: Fact | None) -> str:
-    """构造本次动作的用户提示，只包含 Decision 与允许透露的内容。"""
+def build_user_prompt(
+    decision: Decision,
+    fact: Fact | None,
+    clue: Clue | None = None,
+) -> str:
+    """构造本次动作的用户提示，只包含 Decision、允许透露的内容与物证。"""
+    clue_block = _clue_text(clue)
     if decision.action == "evade" and decision.fact_id is not None:
         return (
             "动作：你知道这件事，但不愿说。含糊其辞、转移话题或反问，"
             "不要直接说“我不知道”，也不要把这件事的具体内容说出来。\n"
             f"话题方向：{_topic_direction(fact)}\n"
+            f"{clue_block}"
+            "只输出角色的话。"
+        )
+    if decision.action == "lie":
+        return (
+            f"{_action_text(decision)}\n"
+            f"{clue_block}"
             "只输出角色的话。"
         )
     content = decision.content or (fact.text if fact is not None else "")
     return (
         f"{_action_text(decision)}\n"
+        f"{clue_block}"
         f"给定内容：{content if content else '无'}\n"
         "只输出角色的话。"
     )
@@ -153,13 +171,22 @@ def _action_text(decision: Decision) -> str:
 
 
 def _allowed_text(decision: Decision, fact: Fact | None) -> str:
-    if decision.action == "evade":
+    if decision.action in ("evade", "lie"):
         return ""
     if decision.content is not None:
         return decision.content
     if fact is not None:
         return fact.text
     return ""
+
+
+def _clue_text(clue: Clue | None) -> str:
+    if clue is None:
+        return ""
+    return (
+        f"对方把一件物证放在你面前：{clue.name}——{clue.desc}。"
+        "你必须针对这件东西作出反应，但仍受当前动作约束（说/躲/骗）。\n"
+    )
 
 
 def _topic_direction(fact: Fact | None) -> str:
@@ -172,7 +199,11 @@ def _topic_direction(fact: Fact | None) -> str:
     return "关于你被问到的那件事"
 
 
-def _action_issue(draft: str, decision: Decision) -> str | None:
+def _action_issue(
+    draft: str,
+    decision: Decision,
+    fact: Fact | None = None,
+) -> str | None:
     if decision.action == "unparsed" and (
         "不知道" in draft or "没听懂" in draft
     ):
@@ -183,4 +214,10 @@ def _action_issue(draft: str, decision: Decision) -> str | None:
         and "不知道" in draft
     ):
         return "知道但不愿说时不能直接说不知道，要含糊或反问"
+    if (
+        decision.action == "lie"
+        and fact is not None
+        and fact.text in draft
+    ):
+        return "撒谎时不能把这件事原样说出来，要编一个别的说法"
     return None

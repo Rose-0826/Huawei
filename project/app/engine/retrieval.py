@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from app.config import (
     RETRIEVAL_KEYWORD_WEIGHT,
     RETRIEVAL_MAX_RESULTS,
@@ -11,11 +13,17 @@ from app.engine.intent import Intent
 from app.models import Fact, Script
 
 
-def retrieve(script: Script, npc_id: str, intent: Intent) -> list[Fact]:
-    """只在 NPC 持有的事实中检索，按 topic 与关键词相关度返回候选。"""
+def retrieve(
+    script: Script,
+    npc_id: str,
+    intent: Intent,
+    exclude_ids: Collection[str] = (),
+) -> list[Fact]:
+    """只在 NPC 持有的事实中检索，按相关度返回候选，已答事实整体后排。"""
     if not intent.topics:
         return []
     wanted = set(intent.topics)
+    excluded = set(exclude_ids)
     candidates: list[tuple[int, int, Fact]] = []
     for order, fact in enumerate(script.facts):
         if npc_id not in fact.holders:
@@ -31,5 +39,11 @@ def retrieve(script: Script, npc_id: str, intent: Intent) -> list[Fact]:
             + keyword_score * RETRIEVAL_KEYWORD_WEIGHT
         )
         candidates.append((score, order, fact))
-    candidates.sort(key=lambda item: (-item[0], item[1]))
+    candidates.sort(
+        key=lambda item: (
+            item[2].id in excluded,
+            -item[0],
+            item[1],
+        )
+    )
     return [fact for _, _, fact in candidates[:RETRIEVAL_MAX_RESULTS]]

@@ -26,13 +26,22 @@ def compare_testimony(left: Statement, right: Statement) -> Alignment:
     if left.action in _QUIET and right.action in _QUIET:
         return "unclear"
     if left.action == "lie" and right.action == "lie":
-        return "conflicting"
+        return _same_fact(left, right)
     if left.action == "disclose" and right.action == "disclose":
         return _compare_disclosures(left, right)
     if "disclose" in (left.action, right.action):
         other = right if left.action == "disclose" else left
-        return "conflicting" if other.action == "lie" else "unclear"
+        if other.action == "lie":
+            return _same_fact(left, right)
+        return "unclear"
     return "unclear"
+
+
+def _same_fact(left: Statement, right: Statement) -> Alignment:
+    """两条口径指向同一条事实才算对不上，否则只是说不清。"""
+    if left.fact_id is None or left.fact_id != right.fact_id:
+        return "unclear"
+    return "conflicting"
 
 
 def _compare_disclosures(left: Statement, right: Statement) -> Alignment:

@@ -449,3 +449,104 @@ def test_present_after_repeat_still_reanswers(
     assert outcome.pressure == pytest.approx(0.25)
     assert outcome.reply
     assert outcome.reply != REPEATED_QUESTION_REPLY
+
+def test_belief_disclosure_does_not_unlock_clue(
+    store: GameStore,
+    script: Script,
+) -> None:
+    fact = next(item for item in script.facts if item.id == "f14")
+    state = store.start(script)
+
+    outcome = ask(
+        store,
+        state.game_id,
+        "r2",
+        "三年前那场火到底是怎么回事",
+        FakeLLM(fact.belief["r2"]),
+    )
+
+    assert outcome.ok is True
+    assert outcome.action == "disclose"
+    assert outcome.decision is not None
+    assert outcome.decision.content == fact.belief["r2"]
+    assert outcome.unlocked_clue is None
+    assert "c05" not in state.unlocked_clue_ids
+    assert "f14" not in state.disclosed_fact_ids
+
+
+def test_true_disclosure_still_unlocks_clue(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    outcome = ask(
+        store,
+        state.game_id,
+        "r1",
+        "三年前那场火到底是怎么回事",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.action == "disclose"
+    assert outcome.unlocked_clue is not None
+    assert outcome.unlocked_clue.id == "c05"
+    assert "f14" in state.disclosed_fact_ids
+
+
+def test_ask_with_new_wording_advances_to_next_fact(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    first = ask(
+        store,
+        state.game_id,
+        "r2",
+        "争吵什么时候停的",
+        FakeLLM(),
+    )
+    second = ask(
+        store,
+        state.game_id,
+        "r2",
+        "争吵是什么时候停下的",
+        FakeLLM(),
+    )
+
+    assert first.decision is not None
+    assert first.decision.fact_id == "f02"
+    assert second.decision is not None
+    assert second.decision.fact_id == "f03"
+    assert state.answered_fact_ids["r2"] == ["f02", "f03"]
+
+
+def test_present_reanswer_does_not_exclude_answered_fact(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    ask(store, state.game_id, "r2", "争吵什么时候停的", FakeLLM())
+
+    outcome = present_clue(
+        store,
+        state.game_id,
+        "r2",
+        "c08",
+        FakeLLM(),
+    )
+
+    assert outcome.ok is True
+    assert outcome.decision is not None
+    assert outcome.decision.fact_id == "f02"
+
+
+def test_answered_fact_state_defaults_to_empty(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+
+    assert state.answered_fact_ids == {}

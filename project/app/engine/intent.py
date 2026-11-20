@@ -38,12 +38,16 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "恨",
         "钱",
         "账",
+        "账本",
+        "账簿",
+        "对账",
         "遗产",
         "银元",
         "赌",
         "失火",
         "火灾",
         "那场火",
+        "登记簿",
     ),
     "relation": (
         "认识",
@@ -58,6 +62,9 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "同乡",
         "人情",
         "记者",
+        "账本",
+        "账簿",
+        "对账",
     ),
     "event": (
         "发生",
@@ -72,6 +79,8 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "热水",
         "争吵",
         "吵架",
+        "争执",
+        "登记簿",
         "死了",
         "尸体",
         "发现",
@@ -79,6 +88,13 @@ TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
         "杀",
     ),
 }
+
+KEYWORD_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("吵架", "争吵", "争执", "吵"),
+    ("钱", "银元", "大洋", "银钱", "工钱", "辛苦钱"),
+    ("账", "账本", "账簿", "账目", "对账", "查账", "算账"),
+    ("登记簿", "登记记录", "登记"),
+)
 
 
 @dataclass(frozen=True)
@@ -103,6 +119,9 @@ def parse_intent(question: str) -> Intent:
         if matched:
             topics.append(topic)
             keywords.extend(matched)
+    for group in KEYWORD_GROUPS:
+        if any(keyword in question for keyword in group):
+            keywords.extend(group)
     return Intent(
         question=question,
         topics=tuple(topics),

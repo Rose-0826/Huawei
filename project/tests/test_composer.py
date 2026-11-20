@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.engine.composer import (
+    _allowed_text,
     build_system_prompt,
     build_user_prompt,
     compose,
@@ -14,7 +15,7 @@ from app.engine.composer import (
 )
 from app.engine.policy import Decision
 from app.llm import LLMUnavailable
-from app.models import Fact, Role, Script
+from app.models import Clue, Fact, Role, Script
 from app.script_loader import load_script
 
 SCRIPT_PATH = (
@@ -66,6 +67,10 @@ def _disclose(fact: Fact) -> Decision:
         is_lie=False,
         risk=0.2,
     )
+
+
+def _clue(script: Script, clue_id: str) -> Clue:
+    return next(clue for clue in script.clues if clue.id == clue_id)
 
 
 def test_disclose_returns_valid_draft(script: Script) -> None:
@@ -366,3 +371,63 @@ def test_llm_unavailable_falls_back_without_retry(
 
     assert result == fact.text + "。"
     assert llm.calls == 1
+
+def test_clue_prompt_contains_evidence(script: Script) -> None:
+    fact = _fact(script, "f02")
+    role = _role(script, "r3")
+    clue = _clue(script, "c08")
+    llm = FakeLLM(["我瞧见这东西，心里咯噔一下。"])
+
+    result = compose(role, _disclose(fact), fact, script, llm, clue=clue)
+
+    prompt = llm.calls[0][1]
+    assert result == "我瞧见这东西，心里咯噔一下。"
+    assert clue.name in prompt
+    assert clue.desc in prompt
+    assert "物证" in prompt
+    assert "仍受当前动作约束" in prompt
+
+
+def test_plain_prompt_has_no_evidence(script: Script) -> None:
+    fact = _fact(script, "f02")
+    role = _role(script, "r3")
+    llm = FakeLLM(["那会儿我在楼下听见吵声。"])
+
+    compose(role, _disclose(fact), fact, script, llm)
+
+    assert "物证" not in llm.calls[0][1]
+
+
+def test_lie_prompt_omits_fact_text_and_allowed_text(script: Script) -> None:
+    fact = _fact(script, "f11")
+    decision = Decision(
+        action="lie",
+        fact_id="f11",
+        content=None,
+        is_lie=True,
+        risk=0.9,
+    )
+
+    prompt = build_user_prompt(decision, fact)
+
+    assert fact.text not in prompt
+    assert "银元" not in prompt
+    assert _allowed_text(decision, fact) == ""
+
+
+def test_lie_cannot_copy_fact_verbatim(script: Script) -> None:
+    fact = _fact(script, "f07")
+    role = _role(script, "r3")
+    decision = Decision(
+        action="lie",
+        fact_id="f07",
+        content=None,
+        is_lie=True,
+        risk=0.9,
+    )
+    llm = FakeLLM([fact.text, fact.text, fact.text])
+
+    result = compose(role, decision, fact, script, llm)
+
+    assert result == "那会儿我在忙自己的事，没留意别的。"
+    assert "撒谎" in llm.calls[1][1]

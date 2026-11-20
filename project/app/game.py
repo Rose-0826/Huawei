@@ -28,6 +28,7 @@ class GameState:
     unlocked_clue_ids: list[str] = field(default_factory=list)
     presented_clue_pairs: set[tuple[str, str]] = field(default_factory=set)
     disclosed_fact_ids: set[str] = field(default_factory=set)
+    answered_fact_ids: dict[str, list[str]] = field(default_factory=dict)
     ended: bool = False
     accusation: AccusationOutcome | None = None
 
@@ -201,7 +202,14 @@ def present_clue(
         MAX_PRESSURE,
         state.pressure.get(npc_id, 0.0) + PRESSURE_PER_CLUE,
     )
-    return _answer(state, role, question, llm)
+    return _answer(
+        state,
+        role,
+        question,
+        llm,
+        clue=clue,
+        exclude_answered=False,
+    )
 
 
 def confront(
@@ -229,6 +237,8 @@ def confront(
         return _confront_error("empty_question")
     if len(text) > MAX_QUESTION_CHARS:
         return _confront_error("question_too_long")
+    if any(state.last_questions.get(role.id) == text for role in (left, right)):
+        return _confront_error("confront_repeated_question")
 
     outcomes = [_answer(state, role, text, llm) for role in (left, right)]
     left_decision = outcomes[0].decision
@@ -357,23 +367,52 @@ def _answer(
     role: Role,
     question: str,
     llm: LLMClient | None,
+    clue: Clue | None = None,
+    exclude_answered: bool = True,
 ) -> AskOutcome:
     intent = parse_intent(question)
-    candidates = retrieve(state.script, role.id, intent)
+    exclude_ids = (
+        state.answered_fact_ids.get(role.id, [])
+        if exclude_answered
+        else []
+    )
+    candidates = retrieve(
+        state.script,
+        role.id,
+        intent,
+        exclude_ids=exclude_ids,
+    )
     fact = candidates[0] if candidates else None
     pressure = state.pressure.get(role.id, 0.0)
     decision = decide(role, fact, intent, pressure)
-    reply = compose(role, decision, fact, state.script, llm)
+    reply = compose(
+        role,
+        decision,
+        fact,
+        state.script,
+        llm,
+        clue=clue,
+    )
     state.last_questions[role.id] = question
+    if fact is not None:
+        answered = state.answered_fact_ids.setdefault(role.id, [])
+        if fact.id not in answered:
+            answered.append(fact.id)
 
     unlocked_clue: Clue | None = None
-    if decision.action == "disclose" and fact is not None:
-        if decision.content == fact.text:
-            state.disclosed_fact_ids.add(fact.id)
-        clue = _first_clue_for_fact(state.script, fact.id)
-        if clue is not None and clue.id not in state.unlocked_clue_ids:
-            state.unlocked_clue_ids.append(clue.id)
-            unlocked_clue = clue
+    if (
+        decision.action == "disclose"
+        and fact is not None
+        and decision.content == fact.text
+    ):
+        state.disclosed_fact_ids.add(fact.id)
+        first_clue = _first_clue_for_fact(state.script, fact.id)
+        if (
+            first_clue is not None
+            and first_clue.id not in state.unlocked_clue_ids
+        ):
+            state.unlocked_clue_ids.append(first_clue.id)
+            unlocked_clue = first_clue
     return AskOutcome(
         ok=True,
         error=None,

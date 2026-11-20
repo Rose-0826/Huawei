@@ -107,3 +107,38 @@ def test_retrieval_is_deterministic(script: Script) -> None:
     second = _ids(retrieve(script, "r2", intent))
 
     assert first == second
+
+def test_quarrel_question_hits_f02_for_ahuang(script: Script) -> None:
+    hits = retrieve(script, "r3", parse_intent("22:30 前后是不是在吵架？"))
+
+    assert hits[0].id == "f02"
+
+
+def test_money_question_hits_silver_for_laohan(script: Script) -> None:
+    hits = retrieve(
+        script,
+        "r5",
+        parse_intent("案发之后，沈玉兰有没有给过你钱？"),
+    )
+
+    assert hits[0].id == "f11"
+
+
+def test_exclude_ids_moves_answered_fact_behind(script: Script) -> None:
+    intent = parse_intent("争吵什么时候停的")
+    first = retrieve(script, "r2", intent)
+    second = retrieve(script, "r2", intent, exclude_ids=["f02"])
+
+    assert first[0].id == "f02"
+    assert second[0].id == "f03"
+
+
+def test_exclude_ids_keeps_only_candidate(script: Script) -> None:
+    hits = retrieve(
+        script,
+        "r3",
+        parse_intent("壁炉边的拨火棍呢"),
+        exclude_ids=["f07"],
+    )
+
+    assert [fact.id for fact in hits] == ["f07"]
