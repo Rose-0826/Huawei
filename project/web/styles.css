@@ -370,6 +370,22 @@ button:disabled {
   background: rgba(214, 173, 99, 0.07);
 }
 
+.side-suspect.mood-shaken {
+  box-shadow: inset 0 0 0 1px rgba(214, 173, 99, 0.26);
+}
+
+.side-suspect.mood-shaken .mini-silhouette {
+  filter: drop-shadow(0 0 5px rgba(214, 173, 99, 0.3));
+}
+
+.side-suspect.mood-softened {
+  box-shadow: inset 0 0 0 1px rgba(255, 210, 140, 0.4);
+}
+
+.side-suspect.mood-softened .mini-silhouette {
+  filter: drop-shadow(0 0 7px rgba(255, 210, 140, 0.45));
+}
+
 .mini-silhouette {
   position: relative;
   width: 38px;
@@ -514,7 +530,7 @@ button:disabled {
   left: 50%;
   z-index: 6;
   width: min(680px, 58vw);
-  max-height: clamp(190px, 38vh, 340px);
+  max-height: clamp(240px, 46vh, 430px);
   overflow-y: auto;
   overscroll-behavior: contain;
   transform: translateX(-50%);
@@ -1167,6 +1183,18 @@ body.evidence-open .actor-id {
   margin-left: 0;
 }
 
+.clue-hand.density-2 .clue-slip {
+  margin-left: -10px;
+}
+
+.clue-hand.density-3 .clue-slip {
+  margin-left: -6px;
+}
+
+.clue-hand.density-4 .clue-slip {
+  margin-left: 0;
+}
+
 .clue-slip:hover {
   transform: translateY(-7px) rotate(0deg);
 }
@@ -1226,6 +1254,13 @@ body.evidence-open .actor-id {
 .present-button:hover:not(:disabled) {
   background: rgba(143, 51, 40, 0.38);
   border-color: #b94b3a;
+}
+
+.present-button:disabled {
+  opacity: 0.66;
+  color: #dcb695;
+  border-color: rgba(214, 173, 99, 0.38);
+  background: rgba(143, 51, 40, 0.16);
 }
 
 .present-target {
@@ -1413,7 +1448,7 @@ body.evidence-open .actor-id {
 .toasts {
   position: fixed;
   left: 50%;
-  bottom: 30px;
+  bottom: 96px;
   z-index: 60;
   width: min(440px, calc(100vw - 40px));
   display: flex;
@@ -1623,6 +1658,21 @@ body.evidence-open .actor-id {
   color: var(--ink);
   font-size: 15px;
   line-height: 1.75;
+}
+
+.truth-item.unfound {
+  border-left-color: rgba(154, 176, 196, 0.28);
+}
+
+.truth-item.unfound .truth-id {
+  color: var(--ink-dim);
+}
+
+.truth-text.truth-locked {
+  color: var(--ink-dim);
+  font-size: var(--text-note);
+  font-style: italic;
+  letter-spacing: 0.18em;
 }
 
 .missed-panel {
@@ -1979,10 +2029,24 @@ body.evidence-open .actor-id {
 
   .confront-log {
     top: 162px;
-    left: 78px;
+    left: 84px;
     right: 12px;
-    max-height: min(52vh, 460px);
+    max-height: min(40vh, 340px);
     padding: 10px 12px 8px;
+  }
+
+  .toasts {
+    bottom: 112px;
+    width: min(320px, calc(100vw - 48px));
+  }
+
+  .clue-hand.density-2 .clue-slip,
+  .clue-hand.density-3 .clue-slip {
+    margin-left: 4px;
+  }
+
+  .clue-hand.density-4 .clue-slip {
+    margin-left: -10px;
   }
 
   .table {

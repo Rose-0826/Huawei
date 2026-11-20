@@ -121,6 +121,14 @@ function updateMood(value) {
   word.className = `actor-mood ${mood.className}`;
 }
 
+function updateSideRailMoods() {
+  document.querySelectorAll(".side-suspect").forEach((button) => {
+    const npcId = button.dataset.npc;
+    button.classList.remove("mood-guarded", "mood-shaken", "mood-softened");
+    button.classList.add(moodFor(state.pressure[npcId] ?? 0).className);
+  });
+}
+
 async function speak(text, options = {}) {
   const { narration = false, waiting = false } = options;
   speechToken += 1;
@@ -176,6 +184,7 @@ function renderSideRail() {
       button.classList.add("selected");
     }
     button.classList.add(`role-${role.id}`);
+    button.classList.add(moodFor(state.pressure[role.id] ?? 0).className);
     const pickIndex = state.confrontIds.indexOf(role.id);
     if (state.confrontMode && pickIndex >= 0) {
       button.classList.add("confront-picked");
@@ -195,6 +204,7 @@ function renderClues() {
   const hand = $("#clue-hand");
   const hint = $("#hand-hint");
   hand.innerHTML = "";
+  hand.classList.remove("density-2", "density-3", "density-4");
   if (state.clues.length === 0) {
     if (hint) {
       hint.classList.add("hidden");
@@ -207,6 +217,11 @@ function renderClues() {
   }
   if (hint) {
     hint.classList.remove("hidden");
+  }
+  if (state.clues.length >= 4) {
+    hand.classList.add("density-4");
+  } else if (state.clues.length >= 2) {
+    hand.classList.add(`density-${state.clues.length}`);
   }
 
   const tilts = [-4, 2, -1, 3, -2, 1];
@@ -364,27 +379,28 @@ function toggleConfrontMode() {
   toggle.setAttribute("aria-pressed", String(state.confrontMode));
   toggle.textContent = state.confrontMode ? "退出对质" : "对质";
   $("#send-button").textContent = state.confrontMode ? "对" : "问";
-  clearConfrontLog();
+  resetConfrontSession();
   $("#speech").classList.remove("hidden");
   if (state.confrontMode) {
+    revealConfrontLog();
     updateConfrontPlaceholder();
   } else {
     const role = currentRole();
     $("#question-input").placeholder = role
       ? `问${role.name}……`
       : "先点左边一个人，再问";
+    if (state.confrontHistory.length > 0) {
+      revealConfrontLog();
+    } else {
+      $("#confront-log").classList.add("hidden");
+    }
   }
   renderSideRail();
   refreshControls();
   $("#question-input").focus();
 }
 
-function clearConfrontLog() {
-  const log = $("#confront-log");
-  if (!log) {
-    return;
-  }
-  log.classList.add("hidden");
+function resetConfrontSession() {
   const echo = $("#confront-question-echo");
   echo.textContent = "";
   echo.removeAttribute("title");
@@ -393,6 +409,24 @@ function clearConfrontLog() {
   $("#confront-who-b").textContent = "";
   $("#confront-say-b").textContent = "";
   $("#confront-verdict").textContent = "";
+}
+
+function revealConfrontLog() {
+  const log = $("#confront-log");
+  if (!log) {
+    return;
+  }
+  renderConfrontHistory();
+  log.classList.remove("hidden");
+}
+
+function clearConfrontLog() {
+  const log = $("#confront-log");
+  if (!log) {
+    return;
+  }
+  resetConfrontSession();
+  log.classList.add("hidden");
 }
 
 function clearConfrontHistory() {
@@ -499,9 +533,11 @@ function setPressure(npcId, value, animate = false) {
   const old = state.pressure[npcId] ?? 0;
   state.pressure[npcId] = value;
   if (npcId !== state.currentNpcId) {
+    updateSideRailMoods();
     return;
   }
   updateMood(value);
+  updateSideRailMoods();
   if (!animate || value <= old) {
     return;
   }
@@ -511,6 +547,25 @@ function setPressure(npcId, value, animate = false) {
   actor.classList.add("recoiling");
   clearTimeout(recoilTimer);
   recoilTimer = setTimeout(() => actor.classList.remove("recoiling"), 1800);
+}
+
+function applyConfrontPressure(payload) {
+  const pressure = payload || {};
+  if (typeof pressure === "number") {
+    for (const npcId of state.confrontIds) {
+      setPressure(npcId, pressure, true);
+    }
+    return;
+  }
+  if (typeof pressure !== "object") {
+    return;
+  }
+  for (const [npcId, value] of Object.entries(pressure)) {
+    if (typeof value === "number") {
+      setPressure(npcId, value, true);
+    }
+  }
+  updateSideRailMoods();
 }
 
 function showTableEvidence(clue, options = {}) {
@@ -639,7 +694,10 @@ async function handleConfront(event) {
   $("#question-input").value = "";
   refreshControls();
   $("#speech").classList.add("hidden");
-  clearConfrontLog();
+  resetConfrontSession();
+  if (state.confrontHistory.length > 0) {
+    revealConfrontLog();
+  }
 
   try {
     const data = await api(`/games/${state.gameId}/confront`, {
@@ -652,6 +710,7 @@ async function handleConfront(event) {
     for (const clue of data.unlocked_clues || []) {
       mergeClue(clue);
     }
+    applyConfrontPressure(data.pressure || {});
     renderConfront(data, question);
   } catch (error) {
     toast(error.detail || "两人没有对上话", "warn");
@@ -830,6 +889,10 @@ async function handleAccuse() {
   }
 }
 
+function factKey(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
 function showVerdict(data, role) {
   const overlay = $("#verdict");
   const title = $("#verdict-title");
@@ -837,27 +900,37 @@ function showVerdict(data, role) {
   title.className = `verdict-result ${data.correct ? "correct" : "wrong"}`;
   $("#verdict-subtitle").textContent = `你指认了 ${role.name}`;
 
+  const facts = Array.isArray(data.timeline) ? data.timeline : [];
+  const missed = Array.isArray(data.missed_fact_ids)
+    ? data.missed_fact_ids
+    : [];
+  const missedSet = new Set(missed.map(factKey));
+
   const timeline = $("#truth-timeline");
   timeline.innerHTML = "";
   const items = [];
-  const facts = Array.isArray(data.timeline) ? data.timeline : [];
   facts.forEach((fact, index) => {
-    const item = element("li", "truth-item");
+    const key = factKey(fact.fact_id);
+    const unfound = missedSet.has(key);
+    const item = element("li", `truth-item${unfound ? " unfound" : ""}`);
     item.appendChild(
       element(
         "span",
         "truth-id",
-        `真相 ${String(index + 1).padStart(2, "0")} · ${fact.fact_id.toUpperCase()}`
+        `真相 ${String(index + 1).padStart(2, "0")} · ${String(fact.fact_id || "").toUpperCase()}`
       )
     );
-    item.appendChild(element("p", "truth-text", fact.text));
+    if (unfound) {
+      item.appendChild(
+        element("p", "truth-text truth-locked", "未挖出")
+      );
+    } else {
+      item.appendChild(element("p", "truth-text", fact.text));
+    }
     timeline.appendChild(item);
     items.push(item);
   });
 
-  const missed = Array.isArray(data.missed_fact_ids)
-    ? data.missed_fact_ids
-    : [];
   if (missed.length && missed.length === facts.length) {
     $("#missed-summary").textContent = "破案链一条都没挖出来";
   } else if (missed.length) {
@@ -868,7 +941,9 @@ function showVerdict(data, role) {
   const missedBox = $("#missed-ids");
   missedBox.innerHTML = "";
   missed.forEach((factId) => {
-    missedBox.appendChild(element("span", "missed-chip", factId.toUpperCase()));
+    missedBox.appendChild(
+      element("span", "missed-chip", String(factId).toUpperCase())
+    );
   });
 
   overlay.classList.remove("hidden");
