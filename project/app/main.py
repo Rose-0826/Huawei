@@ -319,6 +319,8 @@ class BloodStateResponse(APIModel):
     message: str
     winner: Literal["good", "murderer"] | None = None
     reveal: BloodRevealPublic | None = None
+    aftermath: list[dict[str, object]] = Field(default_factory=list)
+    you_alive: bool = True
 
 
 class BloodReplyPublic(APIModel):
@@ -366,9 +368,10 @@ class BloodNominateResponse(APIModel):
 
 
 class BloodVoteRequest(APIModel):
-    """真人投票，可投提名目标之外的人。"""
+    """真人投票，可投提名目标之外的人，理由可选。"""
 
     target_id: str = Field(min_length=1)
+    reason: str | None = None
 
 
 class BloodVotePublic(APIModel):
@@ -393,6 +396,7 @@ class BloodVoteResponse(APIModel):
     message: str
     public_log: list[BloodLogEntryPublic]
     phase: Literal["discussion", "defense", "night", "ended"]
+    aftermath: list[dict[str, object]] = Field(default_factory=list)
 
 
 class BloodNightRequest(APIModel):
@@ -411,6 +415,7 @@ class BloodNightResponse(APIModel):
     reveal: BloodRevealPublic | None = None
     message: str
     public_log: list[BloodLogEntryPublic]
+    aftermath: list[dict[str, object]] = Field(default_factory=list)
 
 
 class BloodGameLogResponse(APIModel):
@@ -758,12 +763,13 @@ def create_app(
         game_id: str,
         request: BloodVoteRequest,
     ) -> BloodVoteResponse:
-        """全体投票，得票严格过半才处决。"""
+        """全体投票，得票达到向上取整半数才处决。"""
         outcome = blood.vote(
             blood_games,
             game_id,
             request.target_id,
             blood_reply,
+            reason=request.reason or "",
         )
         _raise_blood_error(outcome.error)
         state = blood_games.get(game_id)
@@ -858,6 +864,8 @@ def _blood_state_public(view: BloodView) -> BloodStateResponse:
         message=view.message,
         winner=view.winner,
         reveal=_blood_reveal_public(view.reveal),
+        aftermath=[dict(item) for item in view.aftermath],
+        you_alive=view.you_alive,
     )
 
 
@@ -926,10 +934,11 @@ def _blood_vote_public(
             else None
         ),
         winner=outcome.winner,
-        reveal=_blood_reveal_public(blood.build_view(state).reveal),
+        reveal=_blood_reveal_public(outcome.reveal),
         message=outcome.message,
         public_log=_blood_log_public(state.public_log),
         phase=outcome.phase,
+        aftermath=[dict(item) for item in outcome.aftermath],
     )
 
 
@@ -960,9 +969,10 @@ def _blood_night_public(
         day=outcome.day,
         phase=outcome.phase,
         winner=outcome.winner,
-        reveal=_blood_reveal_public(blood.build_view(state).reveal),
+        reveal=_blood_reveal_public(outcome.reveal),
         message=outcome.message,
         public_log=_blood_log_public(state.public_log),
+        aftermath=[dict(item) for item in outcome.aftermath],
     )
 
 

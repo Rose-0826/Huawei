@@ -381,7 +381,7 @@ def test_defense_speak_limit_two_per_day(script: Script) -> None:
 
 
 def test_vote_below_threshold_executes_nobody(script: Script) -> None:
-    """6 人局需 4 票，最高只有 3 票时无人出局。"""
+    """6 人局门槛为 3 票，最高只有 2 票时无人出局。"""
     store, state, reply = _start(script, 3)
     _set_murderer(state, "p2")
     _enter_defense(store, state, reply, "p1")
@@ -390,18 +390,60 @@ def test_vote_below_threshold_executes_nobody(script: Script) -> None:
         {
             "p1": "p2",
             "p2": "p1",
-            "p3": "p2",
+            "p3": "p1",
             "p4": "p2",
             "p5": "p3",
         },
     )
-    outcome = blood.vote(store, state.game_id, "p1", reply)
+    outcome = blood.vote(store, state.game_id, "p5", reply)
     assert outcome.ok is True
-    assert outcome.threshold == 4
-    assert outcome.tally == {"p1": 2, "p2": 3, "p3": 1}
+    assert outcome.threshold == 3
+    assert outcome.tally == {"p1": 2, "p2": 2, "p3": 1, "p5": 1}
     assert outcome.executed is None
     assert outcome.phase == "night"
     assert all(player.alive for player in state.players)
+
+
+def test_vote_three_of_six_executes(script: Script) -> None:
+    """6 人局三票正好达到 ceil(6/2)，可以处决。"""
+    store, state, reply = _start(script, 3)
+    _set_murderer(state, "p2")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p1",
+            "p4": "p2",
+            "p5": "p1",
+        },
+    )
+    outcome = blood.vote(store, state.game_id, "p1", reply)
+    assert outcome.threshold == 3
+    assert outcome.tally["p1"] == 4
+    assert outcome.executed is not None
+    assert outcome.executed.id == "p1"
+    assert outcome.phase == "night"
+
+
+def test_threshold_is_ceil_half_of_alive(script: Script) -> None:
+    """存活 5 人门槛 3、4 人门槛 2。"""
+    store, state, reply = _start(script, 3)
+    _set_murderer(state, "p2")
+    _kill(state, "p4")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(state, {"p1": "p2", "p2": "p1", "p3": "p2", "p5": "p2"})
+    five = blood.vote(store, state.game_id, "p2", reply)
+    assert five.threshold == 3
+
+    store2, state2, reply2 = _start(script, 3)
+    _set_murderer(state2, "p2")
+    _kill(state2, "p4", "p5")
+    _enter_defense(store2, state2, reply2, "p1")
+    _force_votes(state2, {"p1": "p2", "p2": "p1", "p3": "p2"})
+    four = blood.vote(store2, state2.game_id, "p2", reply2)
+    assert four.threshold == 2
 
 
 def test_vote_strict_majority_executes(script: Script) -> None:
@@ -420,7 +462,7 @@ def test_vote_strict_majority_executes(script: Script) -> None:
     )
     outcome = blood.vote(store, state.game_id, "p3", reply)
     assert outcome.ok is True
-    assert outcome.threshold == 4
+    assert outcome.threshold == 3
     assert outcome.tally["p3"] == 5
     assert outcome.executed is not None
     assert outcome.executed.id == "p3"
@@ -493,6 +535,155 @@ def test_agent_votes_carry_public_reason(script: Script) -> None:
         else:
             assert vote.reason
             assert len(vote.reason) <= blood.BLOOD_VOTE_REASON_MAX_CHARS
+
+
+def test_agent_reason_matches_actual_target(script: Script) -> None:
+    """agent 理由提到 target 以外的人名时，改写成围绕 target 的模板句。"""
+    llm = FakeLLM(text="我投阿蘅，她最可疑。")
+    store, state, reply = _start(script, 3, llm)
+    _set_murderer(state, "p2")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p2",
+            "p4": "p2",
+            "p5": "p2",
+        },
+    )
+    outcome = blood.vote(store, state.game_id, "p2", reply)
+    names = {player.id: player.name for player in state.players}
+    for vote in outcome.votes:
+        if vote.voter_id == "p0":
+            continue
+        for player_id, name in names.items():
+            if player_id != vote.target_id:
+                assert name not in vote.reason
+    rewritten = [
+        vote
+        for vote in outcome.votes
+        if vote.voter_id == "p1"
+    ]
+    assert rewritten[0].target_id == "p2"
+    assert rewritten[0].reason == "我投周砚青，因为今晚他的说法最对不上。"
+
+
+def test_agent_reason_without_names_is_kept(script: Script) -> None:
+    """理由不含任何人名时保留原句。"""
+    llm = FakeLLM(text="他刚才的话前后对不上。")
+    store, state, reply = _start(script, 3, llm)
+    _set_murderer(state, "p2")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p2",
+            "p4": "p2",
+            "p5": "p2",
+        },
+    )
+    outcome = blood.vote(store, state.game_id, "p2", reply)
+    p1_vote = next(vote for vote in outcome.votes if vote.voter_id == "p1")
+    assert p1_vote.reason == "他刚才的话前后对不上。"
+
+
+def test_speak_names_two_agents_in_order(script: Script) -> None:
+    """点名两人时按出现顺序各回一条，未被点名的 agent 不抢答。"""
+    store, state, reply = _start(script, 3)
+    _enter_defense(store, state, reply, "p1")
+    outcome = blood.speak(
+        store,
+        state.game_id,
+        "阿蘅和老韩，你们各自说清楚。",
+        reply,
+    )
+    assert [item.speaker_id for item in outcome.replies] == ["p3", "p5"]
+    assert outcome.phase == "defense"
+
+
+def test_speak_names_single_agent_only(script: Script) -> None:
+    """只点一个人时只由该人回应。"""
+    store, state, reply = _start(script, 3)
+    _enter_defense(store, state, reply, "p1")
+    outcome = blood.speak(store, state.game_id, "阿蘅，你说。", reply)
+    assert [item.speaker_id for item in outcome.replies] == ["p3"]
+
+
+def test_speak_without_name_returns_nominee(script: Script) -> None:
+    """质证未点名时由被提名者回应。"""
+    store, state, reply = _start(script, 3)
+    _enter_defense(store, state, reply, "p1")
+    outcome = blood.speak(store, state.game_id, "你还有什么话说？", reply)
+    assert [item.speaker_id for item in outcome.replies] == ["p1"]
+
+
+def test_private_info_never_states_secret_identity(script: Script) -> None:
+    """私有信息与公开讨论都不得直接点破私生女、记者等秘密身份。"""
+    for seed in range(20):
+        _, state, _ = _start(script, seed)
+        for player in state.players:
+            for text in player.private_info:
+                assert "私生女" not in text
+                assert "记者" not in text
+    store, state, reply = _start(script, 2)
+    blood.discuss(store, state.game_id, reply)
+    public = "".join(entry.text for entry in state.public_log)
+    assert "私生女" not in public
+    assert "记者" not in public
+
+
+def test_prompt_forbids_secret_and_hearsay(script: Script) -> None:
+    """提示词约束只说亲历片段，并禁止公开秘密身份。"""
+    _, state, _ = _start(script, 12)
+    player = next(p for p in state.players if p.id == "p2")
+    system, _ = blood_ai.build_prompt(player, state)
+    assert "转述" in system
+    assert "亲历" in system
+    assert "私生女" in system
+    assert "记者" in system
+
+
+def test_you_vote_reason_enters_response_and_log(
+    api: tuple[TestClient, BloodStore],
+) -> None:
+    """真人投票理由进入逐票响应与回看日志。"""
+    client, store = api
+    game_id = client.post("/blood/games").json()["game_id"]
+    client.post(f"/blood/games/{game_id}/nominate", json={"target_id": "p1"})
+    reason = "我投沈玉兰，她那晚最可疑。"
+    response = client.post(
+        f"/blood/games/{game_id}/vote",
+        json={"target_id": "p1", "reason": reason},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    you_vote = next(vote for vote in body["votes"] if vote["voter_id"] == "p0")
+    assert you_vote["reason"] == reason
+    entries = client.get(f"/blood/games/{game_id}/log").json()["entries"]
+    logged = [
+        vote
+        for entry in entries
+        if entry["type"] == "vote"
+        for vote in entry["votes"]
+    ]
+    assert any(vote["voter_id"] == "p0" and vote["reason"] == reason for vote in logged)
+
+
+def test_you_vote_reason_is_optional(api: tuple[TestClient, BloodStore]) -> None:
+    """缺省 reason 时真人票理由为空串。"""
+    client, store = api
+    game_id = client.post("/blood/games").json()["game_id"]
+    client.post(f"/blood/games/{game_id}/nominate", json={"target_id": "p1"})
+    body = client.post(
+        f"/blood/games/{game_id}/vote",
+        json={"target_id": "p1"},
+    ).json()
+    you_vote = next(vote for vote in body["votes"] if vote["voter_id"] == "p0")
+    assert you_vote["reason"] == ""
 
 
 def test_executing_murderer_gives_good_win(script: Script) -> None:
@@ -663,7 +854,7 @@ def test_all_good_dead_murderer_wins(script: Script) -> None:
 
 
 def test_you_executed_ends_game_immediately(script: Script) -> None:
-    """真人被处决后立即 ended，并揭晓凶手，不再跑模板后续天数。"""
+    """真人被处决后立即 ended，卷宗摘要补全剩余处决与胜负。"""
     store, state, reply = _start(script, 9)
     _set_murderer(state, "p2")
     _enter_defense(store, state, reply, "p1")
@@ -682,11 +873,14 @@ def test_you_executed_ends_game_immediately(script: Script) -> None:
     assert outcome.executed is not None
     assert outcome.executed.id == "p0"
     assert outcome.phase == "ended"
+    assert outcome.aftermath
+    assert outcome.winner in {"good", "murderer"}
     view = blood.build_view(state)
     assert view.phase == "ended"
     assert view.reveal is not None
     assert view.reveal.murderer_id == "p2"
     assert view.reveal.murderer_name == "周砚青"
+    assert view.aftermath == outcome.aftermath
     assert blood.speak(store, state.game_id, "我还想说。", reply).error == (
         "game_ended"
     )
@@ -694,7 +888,7 @@ def test_you_executed_ends_game_immediately(script: Script) -> None:
 
 
 def test_you_killed_at_night_ends_with_reveal(script: Script) -> None:
-    """真人被夜杀后立即 ended，并返回 reveal。"""
+    """真人被夜杀后立即 ended，返回 reveal 与非空卷宗摘要。"""
     store, state, reply = _start(script, 10)
     _set_murderer(state, "p4")
     state.phase = "night"
@@ -704,9 +898,66 @@ def test_you_killed_at_night_ends_with_reveal(script: Script) -> None:
     assert outcome.ok is True
     assert outcome.killed is not None and outcome.killed.id == "p0"
     assert outcome.phase == "ended"
+    assert outcome.aftermath
+    assert outcome.winner in {"good", "murderer"}
     view = blood.build_view(state)
     assert view.reveal is not None
     assert view.reveal.murderer_id == "p4"
+    assert view.aftermath == outcome.aftermath
+
+
+def test_aftermath_after_you_executed_is_day_by_day(script: Script) -> None:
+    """真人被处决后，摘要按天记录处决与夜杀，直到分出胜负。"""
+    store, state, reply = _start(script, 9)
+    _set_murderer(state, "p2")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p0",
+            "p2": "p0",
+            "p3": "p0",
+            "p4": "p0",
+            "p5": "p1",
+        },
+    )
+    outcome = blood.vote(store, state.game_id, "p1", reply)
+    assert outcome.executed is not None and outcome.executed.id == "p0"
+    assert outcome.aftermath
+    first = outcome.aftermath[0]
+    assert first["day"] == 1
+    assert first["executed"] is None
+    assert first["killed"] == {"id": "p1", "name": "沈玉兰"}
+    assert first["note"] == "第 1 天，夜里，沈玉兰死在走廊。"
+    last = outcome.aftermath[-1]
+    assert last["executed"] == {"id": "p2", "name": "周砚青"}
+    assert "第 2 天" in last["note"]
+    assert outcome.winner == "good"
+    assert outcome.reveal is not None
+    assert outcome.reveal.murderer_id == "p2"
+
+
+def test_aftermath_after_you_killed_starts_next_day(script: Script) -> None:
+    """真人被夜杀后，摘要从下一天白天开始，不重复当晚。"""
+    store, state, reply = _start(script, 10)
+    _set_murderer(state, "p4")
+    state.phase = "night"
+    killer = next(p for p in state.players if p.id == "p4")
+    killer.suspicion = {"p0": 0.9}
+    outcome = blood.night(store, state.game_id, None)
+    assert outcome.killed is not None and outcome.killed.id == "p0"
+    assert outcome.aftermath
+    first = outcome.aftermath[0]
+    assert first["day"] == 2
+    assert first["executed"] == {"id": "p1", "name": "沈玉兰"}
+    assert first["killed"] == {"id": "p2", "name": "周砚青"}
+    last = outcome.aftermath[-1]
+    assert last["day"] == 3
+    assert last["executed"] == {"id": "p3", "name": "阿蘅"}
+    assert last["killed"] is None
+    assert outcome.winner == "murderer"
+    assert outcome.reveal is not None
+    assert outcome.reveal.murderer_id == "p4"
 
 
 def test_log_has_no_secret_or_culprit_fields(script: Script) -> None:
@@ -756,8 +1007,12 @@ def test_defense_fallback_when_llm_fails(script: Script) -> None:
 
 
 def test_ai_rejects_self_claim(script: Script) -> None:
-    assert blood_ai.clean_line("我是凶手，别怀疑我。") == ""
-    assert blood_ai.clean_line("我是好人，相信我。") == ""
+    """自曝阵营或秘密身份时改写成不含秘密词的含糊句。"""
+    for claim in ("我是凶手，别怀疑我。", "我是好人，相信我。", "我是记者，来查火灾的。"):
+        rewritten = blood_ai.clean_line(claim)
+        assert rewritten
+        for term in blood.BLOOD_SECRET_CLAIM_TERMS:
+            assert term not in rewritten
     _, state, _ = _start(script, 11)
     reply = blood_ai.make_reply_fn(FakeLLM(text="我是凶手，别怀疑我。"))
     text = reply(state, state.players[1])
@@ -789,6 +1044,8 @@ def test_api_state_and_error_codes(api: tuple[TestClient, BloodStore]) -> None:
     body = response.json()
     assert body["phase"] == "discussion"
     assert len(body["players"]) == 6
+    assert body["you_alive"] is True
+    assert body["aftermath"] == []
     assert set(body["you"]) == {"id", "name", "role", "private_info", "teammates"}
     assert body["you"]["role"] in {"villager", "murderer"}
     game_id = body["game_id"]
@@ -902,8 +1159,10 @@ def test_api_vote_returns_reasons_and_threshold(
         "message",
         "public_log",
         "phase",
+        "aftermath",
     }
-    assert body["threshold"] == 4
+    assert body["threshold"] == 3
+    assert body["aftermath"] == []
     assert len(body["votes"]) == 6
     for vote in body["votes"]:
         assert set(vote) == {
@@ -932,12 +1191,15 @@ def test_api_ended_returns_reveal(api: tuple[TestClient, BloodStore]) -> None:
         "murderer_id": "p5",
         "murderer_name": "老韩",
     }
+    assert night.json()["aftermath"]
     view = client.get(f"/blood/games/{game_id}")
     assert view.status_code == 200
     body = view.json()
     assert body["phase"] == "ended"
     assert body["reveal"]["murderer_id"] == "p5"
-    assert body["winner"] is None
+    assert body["winner"] in {"good", "murderer"}
+    assert body["aftermath"]
+    assert body["you_alive"] is False
 
 
 def test_api_ended_good_win_returns_winner(

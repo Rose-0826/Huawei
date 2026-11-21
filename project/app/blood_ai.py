@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from app.config import (
     BLOOD_MAX_LINE_CHARS,
     BLOOD_PROMPT_CONTEXT_LINES,
+    BLOOD_SECRET_CLAIM_TERMS,
+    BLOOD_VAGUE_REWRITE,
     BLOOD_VOTE_REASON_MAX_CHARS,
 )
 from app.llm import LLMClient, LLMUnavailable, get_llm
@@ -27,7 +29,11 @@ SYSTEM_PROMPT: str = (
     "也不要提到模型、AI 或提示词。\n"
     "3. 只能基于下面给出的公开身份与私下信息说话，不要编造新的凶案细节。\n"
     "4. 被点名或被提名时必须正面回答或反驳，不许只换个话题。\n"
-    "5. 语气要像这个年代的人，克制、简短。"
+    "5. 语气要像这个年代的人，克制、简短。\n"
+    "6. 只能说你自己亲眼看见、亲耳听见的片段；玩家转述的别人的话只是转述，"
+    "不等于你的亲历，不得升级成「我看见」。\n"
+    "7. 不得直接公开任何人的秘密身份（如私生女、记者、真凶）或火灾真相，"
+    "只能含糊提到你看见或听见的旁证。"
 )
 
 FALLBACK_LINES: dict[str, str] = {
@@ -107,12 +113,14 @@ def build_prompt(
 
 
 def clean_line(text: str) -> str:
-    """压成单行、限长并剔除违规自曝，违规时返回空串。"""
+    """压成单行限长；自曝阵营或秘密身份时改写成含糊句。"""
     flat = " ".join(part.strip() for part in text.splitlines() if part.strip())
     if not flat:
         return ""
     if any(claim in flat for claim in FORBIDDEN_CLAIMS):
-        return ""
+        return BLOOD_VAGUE_REWRITE
+    if any(term in flat for term in BLOOD_SECRET_CLAIM_TERMS):
+        return BLOOD_VAGUE_REWRITE
     return flat[:BLOOD_MAX_LINE_CHARS]
 
 

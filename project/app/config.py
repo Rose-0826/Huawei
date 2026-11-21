@@ -51,3 +51,18 @@ BLOOD_PROMPT_CONTEXT_LINES: Final[int] = 6
 BLOOD_MAX_DEFENSE_SPEAK_PER_DAY: Final[int] = 2
 BLOOD_MAX_FACTS_PER_DAY: Final[int] = 2
 BLOOD_VOTE_REASON_MAX_CHARS: Final[int] = 40
+BLOOD_AFTERMATH_MAX_DAYS: Final[int] = 30
+BLOOD_SECRET_CLAIM_TERMS: Final[tuple[str, ...]] = (
+    "我是凶手",
+    "我是好人",
+    "我是清白的",
+    "我是私生女",
+    "我是记者",
+    "我是真凶",
+    "私生女",
+    "记者",
+)
+BLOOD_SECRET_IDENTITY_TERMS: Final[tuple[str, ...]] = ("私生女", "记者")
+BLOOD_VAGUE_REWRITE: Final[str] = (
+    "这些旧事我只看见一角，说不全；你还是问那晚谁上过楼吧。"
+)

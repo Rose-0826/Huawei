@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from app.config import (
+    BLOOD_AFTERMATH_MAX_DAYS,
     BLOOD_INITIAL_SUSPICION_BASE,
     BLOOD_INITIAL_SUSPICION_JITTER,
     BLOOD_MAX_DEFENSE_SPEAK_PER_DAY,
@@ -20,9 +21,12 @@ from app.config import (
     BLOOD_PRIVATE_FACTS_MAX,
     BLOOD_PRIVATE_FACTS_MIN,
     BLOOD_PRIVATE_MAX_SENSITIVITY,
+    BLOOD_SECRET_CLAIM_TERMS,
+    BLOOD_SECRET_IDENTITY_TERMS,
     BLOOD_SUSPICION_FACT,
     BLOOD_SUSPICION_MENTION,
     BLOOD_SUSPICION_MURDERER,
+    BLOOD_VAGUE_REWRITE,
     BLOOD_VOTE_REASON_MAX_CHARS,
 )
 from app.models import Script
@@ -82,6 +86,8 @@ VOTE_REASON_FALLBACKS: tuple[str, ...] = (
     "我投{name}，那一晚他一直没交代清楚。",
     "我投{name}，这屋里数他的说法最含糊。",
 )
+VOTE_REASON_TARGET_TEMPLATE: str = "我投{name}，因为今晚他的说法最对不上。"
+AFTERMATH_DEATH_PLACE: str = "走廊"
 
 
 @dataclass
@@ -132,6 +138,7 @@ class BloodState:
     speak_cursor: int = 0
     winner: Winner | None = None
     message: str = ""
+    aftermath: list[dict[str, object]] = field(default_factory=list)
     pending_hint: str = ""
     pending_target_id: str | None = None
     pending_fact: dict[str, str] = field(default_factory=dict)
@@ -189,6 +196,8 @@ class BloodView:
     message: str
     winner: Winner | None = None
     reveal: RevealView | None = None
+    aftermath: tuple[dict[str, object], ...] = ()
+    you_alive: bool = True
 
 
 @dataclass(frozen=True)
@@ -244,8 +253,10 @@ class VoteOutcome:
     threshold: int = 0
     executed: BloodPlayer | None = None
     winner: Winner | None = None
+    reveal: RevealView | None = None
     message: str = ""
     phase: Phase = "discussion"
+    aftermath: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -258,7 +269,9 @@ class NightOutcome:
     day: int = 1
     phase: Phase = "discussion"
     winner: Winner | None = None
+    reveal: RevealView | None = None
     message: str = ""
+    aftermath: tuple[dict[str, object], ...] = ()
 
 
 ReplyFn = Callable[[BloodState, BloodPlayer], str]
@@ -335,6 +348,11 @@ def _create_state(
     return state
 
 
+def _leaks_secret_identity(text: str) -> bool:
+    """判断一段私有信息是否直接点破秘密身份。"""
+    return any(term in text for term in BLOOD_SECRET_IDENTITY_TERMS)
+
+
 def _private_info(
     script: Script,
     player: BloodPlayer,
@@ -356,6 +374,7 @@ def _private_info(
         for fact in script.facts
         if player.role_id is not None and player.role_id in fact.holders
     ]
+    facts = [fact for fact in facts if not _leaks_secret_identity(fact.text)]
     safe = [
         fact
         for fact in facts
@@ -378,6 +397,7 @@ def _you_witness_line(script: Script, rng: random.Random) -> str:
         for fact in script.facts
         if fact.sensitivity <= BLOOD_PRIVATE_MAX_SENSITIVITY
         and any(keyword in fact.text for keyword in YOU_WITNESS_KEYWORDS)
+        and not _leaks_secret_identity(fact.text)
     ]
     if not pool:
         return YOU_WITNESS_FALLBACK
@@ -465,18 +485,31 @@ def _release_fact(
     return None
 
 
-def _mentioned_agent(state: BloodState, text: str) -> BloodPlayer | None:
-    """在被点名的人里取文本中出现最早的一位。"""
-    best: BloodPlayer | None = None
-    best_pos = len(text) + 1
+def _mentioned_agents(
+    state: BloodState,
+    text: str,
+    limit: int = 2,
+) -> list[BloodPlayer]:
+    """按出现顺序取最多 limit 名被点到的在场 agent；被提名者优先入选。"""
+    found: list[tuple[int, BloodPlayer]] = []
     for player in _alive_agents(state):
         aliases = AGENT_ADDRESS_ALIASES.get(player.id, (player.name,))
-        for alias in aliases:
-            pos = text.find(alias)
-            if pos != -1 and pos < best_pos:
-                best = player
-                best_pos = pos
-    return best
+        positions = [text.find(alias) for alias in aliases if alias in text]
+        if positions:
+            found.append((min(positions), player))
+    found.sort(key=lambda item: (item[0], item[1].id))
+    mentioned = [player for _, player in found]
+    limited = mentioned[:limit]
+    nominee = _player(state, state.nominee_id)
+    if (
+        state.phase == "defense"
+        and nominee is not None
+        and nominee.alive
+        and any(player.id == nominee.id for player in mentioned)
+        and all(player.id != nominee.id for player in limited)
+    ):
+        limited = [nominee, *limited[: limit - 1]]
+    return limited
 
 
 def _top_suspicion_target(
@@ -541,9 +574,12 @@ def _clip_line(text: str, limit: int = BLOOD_MAX_LINE_CHARS) -> str:
 
 
 def _sanitize_agent_line(text: str) -> str:
+    """压行限长；自曝阵营则弃用，泄露秘密身份则改为含糊句。"""
     flat = _clip_line(text)
     if any(claim in flat for claim in FORBIDDEN_AGENT_CLAIMS):
         return ""
+    if any(term in flat for term in BLOOD_SECRET_CLAIM_TERMS):
+        return BLOOD_VAGUE_REWRITE
     return flat
 
 
@@ -686,16 +722,18 @@ def speak(
     _say(state, you.id, you.name, clean)
     _apply_public_text(state, you.id, clean)
     replies: list[TalkReply] = []
-    mentioned = _mentioned_agent(state, clean)
-    agent = mentioned
-    if agent is None and state.phase == "defense":
+    mentioned = _mentioned_agents(state, clean)
+    agents: list[BloodPlayer] = list(mentioned)
+    if not agents and state.phase == "defense":
         nominee = _player(state, state.nominee_id)
         if nominee is not None and nominee.alive:
-            agent = nominee
-    if agent is None:
-        agent = _next_agent(state)
-    if agent is not None:
-        if mentioned is not None:
+            agents.append(nominee)
+    if not agents:
+        rotated = _next_agent(state)
+        if rotated is not None:
+            agents.append(rotated)
+    for agent in agents:
+        if mentioned:
             hint = "accused"
         elif state.phase == "defense":
             hint = "defense"
@@ -733,16 +771,28 @@ def speak(
     )
 
 
-def _judge(state: BloodState) -> Winner | None:
-    murderer = _player(state, state.murderer_id)
-    alive = [player for player in state.players if player.alive]
-    if murderer is None or not murderer.alive:
+def _judge_alive_ids(
+    roles: dict[str, RoleKind],
+    alive_ids: set[str],
+    murderer_id: str,
+) -> Winner | None:
+    """按存活集合判定胜负：凶手出局好人胜，只剩两人或凶手独存则凶手胜。"""
+    if murderer_id not in alive_ids:
         return "good"
-    if all(player.role != "villager" for player in alive):
+    if all(roles.get(player_id) != "villager" for player_id in alive_ids):
         return "murderer"
-    if len(alive) <= 2:
+    if len(alive_ids) <= 2:
         return "murderer"
     return None
+
+
+def _judge(state: BloodState) -> Winner | None:
+    """按当前存活玩家判定胜负。"""
+    return _judge_alive_ids(
+        {player.id: player.role for player in state.players},
+        {player.id for player in state.players if player.alive},
+        state.murderer_id,
+    )
 
 
 def _win_text(winner: Winner) -> str:
@@ -759,11 +809,154 @@ def _declare_winner(state: BloodState, winner: Winner, reason: str) -> None:
     _say(state, "system", "旁白", reason)
 
 
+def _aftermath_entry(
+    state: BloodState,
+    day: int,
+    executed: BloodPlayer | None,
+    killed: BloodPlayer | None,
+) -> dict[str, object] | None:
+    """生成一条卷宗摘要：当天的处决与夜杀。"""
+    if executed is None and killed is None:
+        return None
+    parts: list[str] = []
+    if executed is not None:
+        parts.append(f"{executed.name}被处决")
+    if killed is not None:
+        parts.append(f"夜里，{killed.name}死在{AFTERMATH_DEATH_PLACE}")
+    return {
+        "day": day,
+        "executed": (
+            {"id": executed.id, "name": executed.name}
+            if executed is not None
+            else None
+        ),
+        "killed": (
+            {"id": killed.id, "name": killed.name}
+            if killed is not None
+            else None
+        ),
+        "note": f"第 {day} 天，" + "；".join(parts) + "。",
+    }
+
+
+def _sim_vote(
+    state: BloodState,
+    alive_ids: set[str],
+) -> BloodPlayer | None:
+    """模拟一轮 agent 投票：各投最怀疑的存活者，达标才处决。"""
+    voters = [
+        player
+        for player in state.players
+        if player.alive and not player.is_you and player.id in alive_ids
+    ]
+    tally: Counter[str] = Counter()
+    for voter in voters:
+        candidates = [
+            player
+            for player in state.players
+            if player.alive
+            and player.id in alive_ids
+            and player.id != voter.id
+        ]
+        if not candidates:
+            continue
+        target = max(
+            candidates,
+            key=lambda player: voter.suspicion.get(player.id, 0.0),
+        )
+        tally[target.id] += 1
+    threshold = (len(voters) + 1) // 2
+    if not tally:
+        return None
+    top = max(tally.values())
+    leaders = [target_id for target_id, count in tally.items() if count == top]
+    if len(leaders) != 1 or top < threshold:
+        return None
+    return _player(state, leaders[0])
+
+
+def _sim_kill(
+    state: BloodState,
+    alive_ids: set[str],
+) -> BloodPlayer | None:
+    """模拟凶手夜杀：挑对其威胁最高、且仍存活的 agent。"""
+    murderer = _player(state, state.murderer_id)
+    if murderer is None or murderer.id not in alive_ids:
+        return None
+    candidates = [
+        player
+        for player in state.players
+        if player.alive and player.id in alive_ids and player.id != murderer.id
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda player: murderer.suspicion.get(player.id, 0.0),
+    )
+
+
+def _simulate_aftermath(
+    state: BloodState,
+) -> tuple[list[dict[str, object]], Winner | None]:
+    """真人出局后，用纯规则推演剩余处决与夜杀，直到分出胜负。"""
+    roles = {player.id: player.role for player in state.players}
+    alive_ids = {player.id for player in state.players if player.alive}
+    winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
+    entries: list[dict[str, object]] = []
+    day = state.day
+    if winner is None and state.phase in ("discussion", "defense"):
+        killed = _sim_kill(state, alive_ids)
+        if killed is not None:
+            alive_ids.discard(killed.id)
+            winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
+        entry = _aftermath_entry(state, day, None, killed)
+        if entry is not None:
+            entries.append(entry)
+        day += 1
+    elif winner is None:
+        day += 1
+    while winner is None and day <= state.day + BLOOD_AFTERMATH_MAX_DAYS:
+        executed = _sim_vote(state, alive_ids)
+        if executed is not None:
+            alive_ids.discard(executed.id)
+        winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
+        killed = None
+        if winner is None:
+            killed = _sim_kill(state, alive_ids)
+            if killed is not None:
+                alive_ids.discard(killed.id)
+                winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
+        entry = _aftermath_entry(state, day, executed, killed)
+        if entry is not None:
+            entries.append(entry)
+        day += 1
+    return entries, winner
+
+
 def _end_with_you_out(state: BloodState, reason: str) -> None:
-    """真人出局即终局：不再用模板把剩余回合跑完。"""
+    """真人出局后进入终局，并用纯规则补全卷宗摘要与最终胜负。"""
+    aftermath, winner = _simulate_aftermath(state)
+    state.aftermath = aftermath
+    if winner is not None:
+        state.winner = winner
+        suffix = (
+            "余下的人把凶手揪了出来。"
+            if winner == "good"
+            else "剩下的日子里，凶手笑到了最后。"
+        )
+        reason = f"{reason}{suffix}"
     state.phase = "ended"
     state.message = reason
-    _log(state, {"type": "end", "day": state.day, "reason": "you_out"})
+    _log(
+        state,
+        {
+            "type": "end",
+            "day": state.day,
+            "reason": "you_out",
+            "winner": state.winner,
+        },
+    )
     _say(state, "system", "旁白", reason)
 
 
@@ -791,6 +984,40 @@ def _fallback_reason(
     return VOTE_REASON_FALLBACKS[index].format(name=target.name)
 
 
+def _reason_names_other(
+    state: BloodState,
+    reason: str,
+    target: BloodPlayer,
+) -> bool:
+    """判断理由里是否出现了 target 以外的玩家姓名或称呼。"""
+    for player in state.players:
+        if player.id == target.id:
+            continue
+        aliases = AGENT_ADDRESS_ALIASES.get(player.id, (player.name,))
+        if any(alias and alias in reason for alias in (*aliases, player.name)):
+            return True
+    return False
+
+
+def _aligned_reason(
+    state: BloodState,
+    voter: BloodPlayer,
+    target: BloodPlayer,
+    raw: str,
+) -> str:
+    """把理由绑定到实际投票目标；提到他人或泄露秘密时改用模板句。"""
+    reason = _clip_line(raw, BLOOD_VOTE_REASON_MAX_CHARS)
+    if not reason:
+        return _fallback_reason(state, voter, target)
+    if any(claim in reason for claim in FORBIDDEN_AGENT_CLAIMS):
+        return VOTE_REASON_TARGET_TEMPLATE.format(name=target.name)
+    if any(term in reason for term in BLOOD_SECRET_CLAIM_TERMS):
+        return VOTE_REASON_TARGET_TEMPLATE.format(name=target.name)
+    if _reason_names_other(state, reason, target):
+        return VOTE_REASON_TARGET_TEMPLATE.format(name=target.name)
+    return reason
+
+
 def _agent_vote(
     state: BloodState,
     agent: BloodPlayer,
@@ -811,10 +1038,7 @@ def _agent_vote(
     finally:
         state.pending_hint = ""
         state.pending_target_id = None
-    if any(claim in reason for claim in FORBIDDEN_AGENT_CLAIMS):
-        reason = ""
-    if not reason:
-        reason = _fallback_reason(state, agent, target)
+    reason = _aligned_reason(state, agent, target, reason)
     return VoteResult(agent.id, agent.name, target.id, target.name, reason)
 
 
@@ -822,9 +1046,9 @@ def _resolve_votes(
     state: BloodState,
     votes: list[VoteResult],
 ) -> tuple[dict[str, int], int, BloodPlayer | None]:
-    """按严格过半处决：得票必须大于存活人数的一半，且不得并列最高。"""
+    """按向上取整半数处决：票数达到 ceil(存活/2) 且唯一最高。"""
     alive_count = sum(1 for player in state.players if player.alive)
-    threshold = alive_count // 2 + 1
+    threshold = (alive_count + 1) // 2
     tally = Counter(vote.target_id for vote in votes)
     if not tally:
         return {}, threshold, None
@@ -915,8 +1139,9 @@ def vote(
     game_id: str,
     target_id: str,
     reply_fn: ReplyFn,
+    reason: str = "",
 ) -> VoteOutcome:
-    """全体存活玩家投票，得票严格过半才处决；真人可投提名目标之外的人。"""
+    """全体存活玩家投票，得票达到 ceil(存活/2) 才处决；真人可附一句理由。"""
     state = store.get(game_id)
     if state is None:
         return VoteOutcome(ok=False, error="game_not_found")
@@ -937,7 +1162,13 @@ def vote(
     if target.is_you:
         return VoteOutcome(ok=False, error="target_invalid", phase=state.phase)
     votes: list[VoteResult] = [
-        VoteResult(you.id, you.name, target.id, target.name)
+        VoteResult(
+            you.id,
+            you.name,
+            target.id,
+            target.name,
+            _clip_line(reason),
+        )
     ]
     for agent in _alive_agents(state):
         agent_vote = _agent_vote(state, agent, reply_fn)
@@ -969,8 +1200,10 @@ def vote(
         threshold=threshold,
         executed=executed,
         winner=state.winner,
+        reveal=_reveal_of(state),
         message=state.message,
         phase=state.phase,
+        aftermath=tuple(state.aftermath),
     )
 
 
@@ -1043,7 +1276,9 @@ def night(
             day=state.day,
             phase=state.phase,
             winner=state.winner,
+            reveal=_reveal_of(state),
             message=state.message,
+            aftermath=tuple(state.aftermath),
         )
     if not you.alive:
         _end_with_you_out(state, f"{you.name} 没能等到天亮，本局到此为止。")
@@ -1054,7 +1289,9 @@ def night(
             day=state.day,
             phase=state.phase,
             winner=state.winner,
+            reveal=_reveal_of(state),
             message=state.message,
+            aftermath=tuple(state.aftermath),
         )
     _reset_day(state)
     state.message = f"第 {state.day} 天，天亮了。"
@@ -1065,7 +1302,9 @@ def night(
         day=state.day,
         phase=state.phase,
         winner=state.winner,
+        reveal=_reveal_of(state),
         message=state.message,
+        aftermath=tuple(state.aftermath),
     )
 
 
@@ -1081,17 +1320,22 @@ def _reset_day(state: BloodState) -> None:
     _log(state, {"type": "phase", "day": state.day, "phase": "discussion"})
 
 
+def _reveal_of(state: BloodState) -> RevealView | None:
+    """终局时返回凶手揭晓，未结束时返回空。"""
+    if state.phase != "ended":
+        return None
+    murderer = _player(state, state.murderer_id)
+    if murderer is None:
+        return None
+    return RevealView(
+        murderer_id=murderer.id,
+        murderer_name=murderer.name,
+    )
+
+
 def build_view(state: BloodState) -> BloodView:
-    """生成公开视图，终局时附上凶手揭晓。"""
+    """生成公开视图，终局时附上凶手揭晓与卷宗摘要。"""
     you = _you(state)
-    reveal: RevealView | None = None
-    if state.phase == "ended":
-        murderer = _player(state, state.murderer_id)
-        if murderer is not None:
-            reveal = RevealView(
-                murderer_id=murderer.id,
-                murderer_name=murderer.name,
-            )
     return BloodView(
         game_id=state.game_id,
         day=state.day,
@@ -1121,7 +1365,9 @@ def build_view(state: BloodState) -> BloodView:
         ),
         message=state.message,
         winner=state.winner,
-        reveal=reveal,
+        reveal=_reveal_of(state),
+        aftermath=tuple(state.aftermath),
+        you_alive=you.alive,
     )
 
 
