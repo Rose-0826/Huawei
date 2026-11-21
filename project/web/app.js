@@ -12,6 +12,9 @@ const state = {
   confrontMode: false,
   confrontIds: [],
   confrontHistory: [],
+  combineMode: false,
+  combinePicks: [],
+  combineRemaining: null,
   busy: false,
   ended: false,
   accuseArmed: false,
@@ -25,6 +28,7 @@ let recoilTimer = null;
 let lookTimer = null;
 let evidenceTimer = null;
 let evidenceHideTimer = null;
+let combineTimer = null;
 
 const reduceMotion = window.matchMedia
   ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -234,8 +238,13 @@ function renderClues() {
     if (!state.seenClues.has(clue.id)) {
       slip.classList.add("new");
     }
-    if (clue.id === state.selectedClueId) {
+    if (!state.combineMode && clue.id === state.selectedClueId) {
       slip.classList.add("selected");
+    }
+    const pickIndex = state.combinePicks.indexOf(clue.id);
+    if (state.combineMode && pickIndex >= 0) {
+      slip.classList.add("combine-picked");
+      slip.dataset.pick = String(pickIndex + 1);
     }
     slip.appendChild(
       element("span", "clue-stamp", `物证 ${clueNumber(clue)}`)
@@ -372,6 +381,9 @@ function toggleConfrontMode() {
   if (state.busy || state.ended) {
     return;
   }
+  if (state.combineMode) {
+    exitCombineMode();
+  }
   state.confrontMode = !state.confrontMode;
   state.confrontIds = [];
   const toggle = $("#confront-toggle");
@@ -466,8 +478,11 @@ function refreshControls() {
   const locked = state.busy || state.ended;
   const hasClue = Boolean(state.selectedClueId);
   const confronting = state.confrontMode;
+  const combining = state.combineMode;
   const twoPicked = state.confrontIds.length === 2;
   const asked = Boolean(role) && state.askedNpcIds.has(role.id);
+  const twoClues = state.clues.length >= 2;
+  const exhausted = state.combineRemaining === 0;
 
   $("#question-input").disabled = locked;
   if (confronting) {
@@ -475,20 +490,28 @@ function refreshControls() {
   } else {
     $("#send-button").disabled = locked || !role || !question;
   }
-  $("#accuse-button").disabled = locked || !role || confronting;
+  $("#accuse-button").disabled = locked || !role || confronting || combining;
   $("#restart-button").disabled = state.busy;
   $("#confront-toggle").disabled = locked;
   $("#present-button").classList.toggle(
     "hidden",
-    confronting || state.clues.length === 0
+    confronting || combining || state.clues.length === 0
   );
-  $("#present-button").disabled = locked || !role || confronting || !hasClue || !asked;
+  $("#present-button").disabled =
+    locked || !role || confronting || combining || !hasClue || !asked;
+
+  const combineButton = $("#combine-button");
+  combineButton.classList.toggle("hidden", confronting);
+  combineButton.classList.toggle("active", combining);
+  combineButton.setAttribute("aria-pressed", String(combining));
+  $("#combine-exit").classList.toggle("hidden", !combining);
+  combineButton.disabled = combining
+    ? locked || state.combinePicks.length !== 2
+    : locked || !twoClues || exhausted;
 
   let presentHint = "";
-  if (!confronting && state.clues.length !== 0) {
-    if (!role) {
-      presentHint = "先点左边一个人，再问";
-    } else if (!asked) {
+  if (!confronting && !combining && state.clues.length !== 0 && role) {
+    if (!asked) {
       presentHint = "先问一句，再出示";
     } else if (!hasClue) {
       presentHint = "先点一张物证";
@@ -499,13 +522,48 @@ function refreshControls() {
   $("#present-target").textContent = presentHint;
   $("#present-button").title = presentHint;
 
+  updateHandHint(twoClues, exhausted);
+
   if (!role && !confronting) {
     $("#question-input").placeholder = "先点左边一个人，再问";
   }
 }
 
+function updateHandHint(twoClues, exhausted) {
+  const hint = $("#hand-hint");
+  if (!hint || state.clues.length === 0) {
+    return;
+  }
+  if (state.combineMode) {
+    const picked = state.combinePicks.length;
+    if (!twoClues) {
+      hint.textContent = "至少两张物证";
+    } else if (picked === 2) {
+      hint.textContent = "对撞这两张";
+    } else if (picked === 1) {
+      hint.textContent = "选两张物证（还差一张）";
+    } else {
+      hint.textContent = "选两张物证";
+    }
+    return;
+  }
+  if (exhausted) {
+    hint.textContent = "点纸片查看详情 · 本局对撞次数用完了";
+    return;
+  }
+  if (typeof state.combineRemaining === "number" && state.combineRemaining < 3) {
+    hint.textContent = `点纸片查看详情 · 对撞剩 ${state.combineRemaining} 次`;
+    return;
+  }
+  hint.textContent = "点纸片查看详情";
+}
+
 function selectClue(clueId) {
   if (state.busy || state.ended) {
+    return;
+  }
+  if (state.combineMode) {
+    toggleCombinePick(clueId);
     return;
   }
   state.seenClues.add(clueId);
@@ -569,6 +627,7 @@ function applyConfrontPressure(payload) {
 }
 
 function showTableEvidence(clue, options = {}) {
+  hideCombineCard();
   const { pinned = false, delta = 0 } = options;
   const box = $("#table-evidence");
   box.innerHTML = "";
@@ -638,6 +697,236 @@ function flyClue(clue, onLanded) {
   }, 560);
 }
 
+function toggleCombinePick(clueId) {
+  if (state.busy || state.ended) {
+    return;
+  }
+  state.seenClues.add(clueId);
+  const index = state.combinePicks.indexOf(clueId);
+  if (index >= 0) {
+    state.combinePicks.splice(index, 1);
+  } else {
+    state.combinePicks.push(clueId);
+    if (state.combinePicks.length > 2) {
+      state.combinePicks.shift();
+    }
+  }
+  renderClues();
+  refreshControls();
+}
+
+function enterCombineMode() {
+  if (state.busy || state.ended || state.combineRemaining === 0) {
+    return;
+  }
+  if (state.clues.length < 2) {
+    toast("至少要有两张物证", "warn");
+    return;
+  }
+  if (state.confrontMode) {
+    toggleConfrontMode();
+  }
+  state.combineMode = true;
+  state.combinePicks = [];
+  state.selectedClueId = null;
+  hideTableEvidence();
+  renderClues();
+  refreshControls();
+}
+
+function exitCombineMode() {
+  if (!state.combineMode) {
+    return;
+  }
+  state.combineMode = false;
+  state.combinePicks = [];
+  renderClues();
+  refreshControls();
+}
+
+function handleCombineClick() {
+  if (state.busy || state.ended) {
+    return;
+  }
+  if (!state.combineMode) {
+    enterCombineMode();
+    return;
+  }
+  if (state.combinePicks.length === 2) {
+    handleCombine();
+  }
+}
+
+function applyCombinePressure(pressure) {
+  const lines = [];
+  if (!pressure || typeof pressure !== "object" || Array.isArray(pressure)) {
+    return lines;
+  }
+  for (const [npcId, value] of Object.entries(pressure)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      continue;
+    }
+    const role = state.roles.find((item) => item.id === npcId);
+    const name = role ? role.name : npcId;
+    const before = state.pressure[npcId] ?? 0;
+    const next = Math.max(0, Math.min(1, value));
+    setPressure(npcId, next, next > before);
+    const delta = next - before;
+    lines.push(
+      delta > 0
+        ? `${name} · 压力 +${delta.toFixed(2)}`
+        : `${name} · 压力 ${next.toFixed(2)}`
+    );
+  }
+  updateSideRailMoods();
+  return lines;
+}
+
+function spawnCombineFly(clue, rect, targetX, targetY, rotation) {
+  const fly = element("div", "clue-fly combine-fly");
+  fly.appendChild(element("span", "fly-stamp", `物证 ${clueNumber(clue)}`));
+  fly.appendChild(element("span", "fly-name", clue.name));
+  fly.style.left = `${rect.left}px`;
+  fly.style.top = `${rect.top}px`;
+  fly.style.width = `${rect.width}px`;
+  fly.style.height = `${rect.height}px`;
+  document.body.appendChild(fly);
+  const dx = targetX - (rect.left + rect.width / 2);
+  const dy = targetY - (rect.top + rect.height / 2);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      fly.style.transform =
+        `translate(${dx}px, ${dy}px) rotate(${rotation}deg) scale(0.94)`;
+    });
+  });
+  return fly;
+}
+
+function flyCombineToTable(first, second) {
+  if (reduceMotion) {
+    return Promise.resolve();
+  }
+  const sourceA = document.querySelector(
+    `.clue-slip[data-clue="${first.id}"]`
+  );
+  const sourceB = document.querySelector(
+    `.clue-slip[data-clue="${second.id}"]`
+  );
+  const target = $("#table-focus");
+  if (!sourceA || !sourceB || !target) {
+    return Promise.resolve();
+  }
+  const rectA = sourceA.getBoundingClientRect();
+  const rectB = sourceB.getBoundingClientRect();
+  const box = target.getBoundingClientRect();
+  const centerX = box.left + box.width / 2;
+  const centerY = box.top + 42;
+  const flyA = spawnCombineFly(first, rectA, centerX - 42, centerY, -5);
+  const flyB = spawnCombineFly(second, rectB, centerX + 42, centerY, 5);
+
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      flyA.classList.add("closing");
+      flyB.classList.add("closing");
+      flyA.style.transform =
+        `translate(${centerX - 24 - (rectA.left + rectA.width / 2)}px, ` +
+        `${centerY - (rectA.top + rectA.height / 2)}px) rotate(-1.5deg) scale(0.94)`;
+      flyB.style.transform =
+        `translate(${centerX + 24 - (rectB.left + rectB.width / 2)}px, ` +
+        `${centerY - (rectB.top + rectB.height / 2)}px) rotate(1.5deg) scale(0.94)`;
+      setTimeout(() => {
+        flyA.classList.add("gone");
+        flyB.classList.add("gone");
+        setTimeout(() => {
+          flyA.remove();
+          flyB.remove();
+          resolve();
+        }, 240);
+      }, 220);
+    }, 520);
+  });
+}
+
+function showCombineCard(data, pressureLines) {
+  const card = $("#combine-card");
+  $("#combine-title").textContent = data.title || "对撞";
+  $("#combine-text").textContent = data.text || "";
+  const pressure = $("#combine-pressure");
+  if (pressureLines.length > 0) {
+    pressure.textContent = pressureLines.join("，");
+    pressure.classList.remove("hidden");
+  } else {
+    pressure.textContent = "";
+    pressure.classList.add("hidden");
+  }
+  card.classList.remove("hidden", "visible", "stamping");
+  void card.offsetWidth;
+  card.classList.add("visible", "stamping");
+  clearTimeout(combineTimer);
+  combineTimer = setTimeout(() => card.classList.remove("stamping"), 900);
+}
+
+function hideCombineCard() {
+  const card = $("#combine-card");
+  if (!card) {
+    return;
+  }
+  clearTimeout(combineTimer);
+  card.classList.add("hidden");
+  card.classList.remove("visible", "stamping");
+}
+
+async function handleCombine() {
+  if (state.busy || state.ended) {
+    return;
+  }
+  if (!state.gameId) {
+    toast("等开局再对撞", "warn");
+    return;
+  }
+  if (state.combinePicks.length !== 2) {
+    toast("选两张物证", "warn");
+    return;
+  }
+  const first = state.clues.find((item) => item.id === state.combinePicks[0]);
+  const second = state.clues.find((item) => item.id === state.combinePicks[1]);
+  if (!first || !second) {
+    toast("这两张纸不在手边", "warn");
+    return;
+  }
+
+  state.busy = true;
+  refreshControls();
+
+  try {
+    const data = await api(`/games/${state.gameId}/combine`, {
+      method: "POST",
+      body: JSON.stringify({ clue_ids: [first.id, second.id] }),
+    });
+    if (typeof data.remaining === "number") {
+      state.combineRemaining = data.remaining;
+    }
+    const pressureLines = applyCombinePressure(data.pressure || {});
+    state.combineMode = false;
+    state.combinePicks = [];
+    hideTableEvidence();
+    hideCombineCard();
+    renderClues();
+    await flyCombineToTable(first, second);
+    showCombineCard(data, pressureLines);
+    refreshControls();
+  } catch (error) {
+    const notReady = error.status === 404 || error.status === 405;
+    toast(
+      notReady ? "这两张纸暂时对不上" : error.detail || "这两张纸对不上",
+      "warn"
+    );
+  } finally {
+    state.busy = false;
+    refreshControls();
+  }
+}
+
 const CONFRONT_VERDICTS = {
   aligned: "两人口径一致",
   conflicting: "两人口径对不上",
@@ -694,6 +983,7 @@ async function handleConfront(event) {
   $("#question-input").value = "";
   refreshControls();
   $("#speech").classList.add("hidden");
+  hideCombineCard();
   resetConfrontSession();
   if (state.confrontHistory.length > 0) {
     revealConfrontLog();
@@ -747,6 +1037,7 @@ async function handleAsk(event) {
   refreshControls();
   clearConfrontLog();
   $("#speech").classList.remove("hidden");
+  hideCombineCard();
   $("#last-question").textContent = `你问：${question}`;
   $("#actor").classList.add("asking");
   speak("……", { waiting: true });
@@ -796,6 +1087,7 @@ async function handlePresent() {
   const pressureBefore = state.pressure[role.id] ?? 0;
   state.busy = true;
   refreshControls();
+  hideCombineCard();
   $("#actor").classList.add("looking");
   clearTimeout(lookTimer);
   lookTimer = setTimeout(() => $("#actor").classList.remove("looking"), 2600);
@@ -880,6 +1172,7 @@ async function handleAccuse() {
       body: JSON.stringify({ suspect_id: role.id }),
     });
     state.ended = true;
+    hideCombineCard();
     showVerdict(data, role);
   } catch (error) {
     toast(error.detail || "指认失败", "warn");
@@ -911,7 +1204,8 @@ function showVerdict(data, role) {
   const items = [];
   facts.forEach((fact, index) => {
     const key = factKey(fact.fact_id);
-    const unfound = missedSet.has(key);
+    const text = String(fact.text ?? "").trim();
+    const unfound = missedSet.has(key) || text === "";
     const item = element("li", `truth-item${unfound ? " unfound" : ""}`);
     item.appendChild(
       element(
@@ -925,7 +1219,7 @@ function showVerdict(data, role) {
         element("p", "truth-text truth-locked", "未挖出")
       );
     } else {
-      item.appendChild(element("p", "truth-text", fact.text));
+      item.appendChild(element("p", "truth-text", text));
     }
     timeline.appendChild(item);
     items.push(item);
@@ -981,6 +1275,9 @@ function resetUI() {
   state.seenClues = new Set();
   state.askedNpcIds = new Set();
   state.confrontHistory = [];
+  state.combineMode = false;
+  state.combinePicks = [];
+  state.combineRemaining = null;
   state.busy = false;
   state.ended = false;
   resetAccuseArm();
@@ -989,6 +1286,7 @@ function resetUI() {
   clearTimeout(lookTimer);
   clearTimeout(evidenceTimer);
   clearTimeout(evidenceHideTimer);
+  clearTimeout(combineTimer);
   document.querySelectorAll(".clue-fly").forEach((fly) => fly.remove());
 
   $("#side-rail").innerHTML = "";
@@ -1007,6 +1305,11 @@ function resetUI() {
   $("#speech").classList.remove("hidden");
   $("#present-button").classList.add("hidden");
   $("#present-target").textContent = "";
+  $("#combine-button").classList.remove("active");
+  $("#combine-button").setAttribute("aria-pressed", "false");
+  $("#combine-exit").classList.add("hidden");
+  $("#hand-hint").textContent = "点纸片查看详情";
+  hideCombineCard();
   $("#table-evidence").classList.add("hidden");
   $("#table-evidence").classList.remove("visible", "pinned");
   document.body.classList.remove("evidence-open");
@@ -1069,6 +1372,8 @@ function init() {
   $("#accuse-button").addEventListener("click", handleAccuse);
   $("#restart-button").addEventListener("click", restartGame);
   $("#present-button").addEventListener("click", handlePresent);
+  $("#combine-button").addEventListener("click", handleCombineClick);
+  $("#combine-exit").addEventListener("click", exitCombineMode);
   $("#confront-toggle").addEventListener("click", toggleConfrontMode);
   $("#restart-verdict").addEventListener("click", restartGame);
   refreshControls();

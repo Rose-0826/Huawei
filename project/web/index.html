@@ -90,6 +90,12 @@
 
     <div id="table-focus" class="table-focus">
       <div id="table-evidence" class="table-evidence hidden"></div>
+      <div id="combine-card" class="combine-card hidden" role="status" aria-live="polite">
+        <span class="combine-stamp">对撞</span>
+        <p id="combine-title" class="combine-title"></p>
+        <p id="combine-text" class="combine-text"></p>
+        <p id="combine-pressure" class="combine-pressure"></p>
+      </div>
     </div>
 
     <section class="table" aria-label="审讯桌">
@@ -100,8 +106,15 @@
         <section class="hand" aria-label="手边物证">
           <div class="hand-title">手边 · 物证<span id="hand-hint" class="hand-hint">点纸片查看详情</span></div>
           <div id="clue-hand" class="clue-hand"></div>
-          <button id="present-button" class="present-button hidden" type="button">出示</button>
-          <p id="present-target" class="present-target"></p>
+          <div id="hand-actions" class="hand-actions">
+            <p id="present-target" class="present-target"></p>
+            <div class="hand-buttons">
+              <button id="present-button" class="present-button hidden" type="button">出示</button>
+              <button id="combine-button" class="combine-button" type="button"
+                      aria-pressed="false">对撞</button>
+              <button id="combine-exit" class="combine-exit hidden" type="button">退出</button>
+            </div>
+          </div>
         </section>
 
         <section class="ask-desk" aria-label="问话">
