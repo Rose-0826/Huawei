@@ -71,6 +71,8 @@ class GameStateResponse(APIModel):
     clues: list[CluePublic]
     pressure: dict[str, float]
     ended: bool
+    combine_remaining: int
+    combine_max: int
 
 
 class AskRequest(APIModel):
@@ -101,13 +103,23 @@ class CombineRequest(APIModel):
     clue_ids: list[str]
 
 
+class CombineReactionPublic(APIModel):
+    """对撞命中后相关角色的一句模板反应。"""
+
+    npc_id: str
+    name: str
+    line: str
+
+
 class CombineResponse(APIModel):
-    """线索对撞结果：新推断、受压角色与剩余次数。"""
+    """线索对撞结果：新推断、受压角色、反应与剩余次数。"""
 
     title: str
     text: str
     pressure: dict[str, float]
     remaining: int
+    reaction: CombineReactionPublic | None = None
+    target_npc_id: str | None = None
 
 
 class ConfrontRequest(APIModel):
@@ -173,6 +185,17 @@ GAME_ERRORS: dict[str, tuple[int, str]] = {
     "confront_failed": (500, "两人的回答没有形成可比的口径"),
 }
 
+COMBINE_FAILURE_TEMPLATES: dict[str, str] = {
+    "combine_needs_two": "对撞需要两张不同的物证（本局还剩 {remaining} 次）",
+    "combine_not_found": (
+        "这两张物证对不上，试试有共同人物或时间的物证"
+        "（本局还剩 {remaining} 次）"
+    ),
+    "combine_already_used": "这两张物证已经对撞过了（本局还剩 {remaining} 次）",
+    "combine_limit_reached": "本局的对撞次数已经用完（本局还剩 {remaining} 次）",
+    "clue_not_unlocked": "这张线索还没有解锁，还不能使用（本局还剩 {remaining} 次）",
+}
+
 
 def create_app(
     script: Script | None = None,
@@ -229,12 +252,30 @@ def create_app(
     ) -> CombineResponse:
         """把两张已解锁物证对撞成一条新推断，并提升相关角色压力。"""
         outcome = combine(game_store, game_id, tuple(request.clue_ids))
-        _raise_error(outcome.error)
+        if outcome.error is not None:
+            status, _ = GAME_ERRORS.get(outcome.error, (400, "请求无法处理"))
+            raise HTTPException(
+                status_code=status,
+                detail=_combine_error_detail(
+                    outcome.error,
+                    outcome.remaining,
+                ),
+            )
         return CombineResponse(
             title=outcome.title or "",
             text=outcome.text or "",
             pressure=dict(outcome.pressure),
             remaining=outcome.remaining,
+            reaction=(
+                CombineReactionPublic(
+                    npc_id=outcome.reaction.npc_id,
+                    name=outcome.reaction.name,
+                    line=outcome.reaction.line,
+                )
+                if outcome.reaction is not None
+                else None
+            ),
+            target_npc_id=outcome.target_npc_id,
         )
 
     @application.post(
@@ -337,6 +378,8 @@ def _state_public(view: GameView) -> GameStateResponse:
         ],
         pressure=dict(view.pressure),
         ended=view.ended,
+        combine_remaining=view.combine_remaining,
+        combine_max=view.combine_max,
     )
 
 
@@ -357,6 +400,14 @@ def _raise_error(error: str | None) -> None:
         return
     status, message = GAME_ERRORS.get(error, (400, "请求无法处理"))
     raise HTTPException(status_code=status, detail=message)
+
+
+def _combine_error_detail(error: str, remaining: int) -> str:
+    """把对撞失败的错误码翻成带方向与剩余次数的提示。"""
+    template = COMBINE_FAILURE_TEMPLATES.get(error)
+    if template is None:
+        return GAME_ERRORS.get(error, (400, "请求无法处理"))[1]
+    return template.format(remaining=max(remaining, 0))
 
 
 

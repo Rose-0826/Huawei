@@ -12,7 +12,7 @@ from app.config import (
     MAX_QUESTION_CHARS,
     PRESSURE_PER_CLUE,
 )
-from app.engine.combine import find_rule
+from app.engine.combine import find_rule, reaction_line
 from app.engine.composer import compose
 from app.engine.confront import Alignment, Statement, compare_testimony
 from app.engine.intent import parse_intent
@@ -88,8 +88,17 @@ class AccusationOutcome:
 
 
 @dataclass(frozen=True)
+class CombineReaction:
+    """对撞命中后相关角色的一句模板反应。"""
+
+    npc_id: str
+    name: str
+    line: str
+
+
+@dataclass(frozen=True)
 class CombineOutcome:
-    """一次线索对撞的结果：新推断、受压角色与剩余次数。"""
+    """一次线索对撞的结果：新推断、受压角色、反应与剩余次数。"""
 
     ok: bool
     error: str | None
@@ -97,6 +106,8 @@ class CombineOutcome:
     text: str | None
     pressure: dict[str, float] = field(default_factory=dict)
     remaining: int = MAX_COMBINE_PER_GAME
+    reaction: CombineReaction | None = None
+    target_npc_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +150,8 @@ class GameView:
     clues: tuple[ClueView, ...]
     pressure: dict[str, float]
     ended: bool
+    combine_remaining: int
+    combine_max: int
 
 
 class GameStore:
@@ -252,34 +265,36 @@ def combine(
     if state is None:
         return _combine_error("game_not_found")
     if state.ended:
-        return _combine_error("game_ended")
+        return _combine_error("game_ended", _remaining(state))
     if len(clue_ids) != 2 or clue_ids[0] == clue_ids[1]:
-        return _combine_error("combine_needs_two")
+        return _combine_error("combine_needs_two", _remaining(state))
     first_id, second_id = clue_ids
     clues = _clue_index(state.script)
     if first_id not in clues or second_id not in clues:
-        return _combine_error("clue_not_found")
+        return _combine_error("clue_not_found", _remaining(state))
     for clue_id in (first_id, second_id):
         if clue_id not in state.unlocked_clue_ids:
-            return _combine_error("clue_not_unlocked")
+            return _combine_error("clue_not_unlocked", _remaining(state))
     if state.combine_count >= MAX_COMBINE_PER_GAME:
         return _combine_error(
             "combine_limit_reached",
-            MAX_COMBINE_PER_GAME - state.combine_count,
+            _remaining(state),
         )
     pair = (first_id, second_id) if first_id < second_id else (
         second_id,
         first_id,
     )
     if pair in state.combine_pairs:
-        return _combine_error("combine_already_used")
+        return _combine_error("combine_already_used", _remaining(state))
     rule = find_rule((first_id, second_id))
     if rule is None:
-        return _combine_error("combine_not_found")
+        return _combine_error("combine_not_found", _remaining(state))
 
     state.combine_pairs.add(pair)
     state.combine_count += 1
     pressure: dict[str, float] = {}
+    reaction: CombineReaction | None = None
+    target_npc_id: str | None = rule.pressure_npc
     if rule.pressure_npc is not None:
         current = state.pressure.get(rule.pressure_npc, 0.0)
         state.pressure[rule.pressure_npc] = min(
@@ -287,13 +302,24 @@ def combine(
             current + rule.pressure_delta,
         )
         pressure[rule.pressure_npc] = state.pressure[rule.pressure_npc]
+        target = _role_index(state.script).get(rule.pressure_npc)
+        if target is None:
+            target_npc_id = None
+        else:
+            reaction = CombineReaction(
+                npc_id=target.id,
+                name=target.name,
+                line=reaction_line(target.name),
+            )
     return CombineOutcome(
         ok=True,
         error=None,
         title=rule.title,
         text=rule.text,
         pressure=pressure,
-        remaining=MAX_COMBINE_PER_GAME - state.combine_count,
+        remaining=_remaining(state),
+        reaction=reaction,
+        target_npc_id=target_npc_id,
     )
 
 
@@ -454,6 +480,8 @@ def build_view(state: GameState) -> GameView:
             for role in state.script.roles
         },
         ended=state.ended,
+        combine_remaining=_remaining(state),
+        combine_max=MAX_COMBINE_PER_GAME,
     )
 
 
@@ -578,6 +606,11 @@ def _combine_error(
         text=None,
         remaining=remaining,
     )
+
+
+def _remaining(state: GameState) -> int:
+    """返回本局剩余的对撞次数。"""
+    return max(0, MAX_COMBINE_PER_GAME - state.combine_count)
 
 
 def _role_index(script: Script) -> dict[str, Role]:

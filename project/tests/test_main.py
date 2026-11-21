@@ -370,16 +370,29 @@ def test_combine_returns_inference_and_pressure(
 
     assert response.status_code == 200
     data = response.json()
-    assert set(data) == {"title", "text", "pressure", "remaining"}
+    assert set(data) == {
+        "title",
+        "text",
+        "pressure",
+        "remaining",
+        "reaction",
+        "target_npc_id",
+    }
     assert data["title"] == "时间线钉板"
     assert "23:00" in data["text"]
     assert "23:05" in data["text"]
     assert data["pressure"]["r1"] == pytest.approx(0.1)
     assert data["remaining"] == 2
+    assert data["target_npc_id"] == "r1"
+    assert data["reaction"]["npc_id"] == "r1"
+    assert data["reaction"]["name"] == "沈玉兰"
+    assert "沈玉兰" in data["reaction"]["line"]
 
     state = client.get(f"/games/{game_id}").json()
     assert state["pressure"]["r1"] == pytest.approx(0.1)
     assert [clue["id"] for clue in state["clues"]] == ["c01", "c02"]
+    assert state["combine_remaining"] == 2
+    assert state["combine_max"] == 3
 
 
 def test_combine_reverse_order_and_duplicate_pair(
@@ -400,7 +413,9 @@ def test_combine_reverse_order_and_duplicate_pair(
 
     assert first.status_code == 200
     assert second.status_code == 409
-    assert second.json()["detail"] == "这两张物证已经对撞过了"
+    detail = second.json()["detail"]
+    assert "这两张物证已经对撞过了" in detail
+    assert "本局还剩 2 次" in detail
 
 
 def test_combine_limit_blocks_fourth_pair(
@@ -436,7 +451,9 @@ def test_combine_limit_blocks_fourth_pair(
     )
 
     assert fourth.status_code == 409
-    assert fourth.json()["detail"] == "本局的对撞次数已经用完"
+    detail = fourth.json()["detail"]
+    assert "本局的对撞次数已经用完" in detail
+    assert "本局还剩 0 次" in detail
 
 
 def test_combine_locked_clue_returns_409(
@@ -468,7 +485,10 @@ def test_combine_pair_without_rule_returns_422(
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "这两张物证对不上"
+    detail = response.json()["detail"]
+    assert "这两张物证对不上" in detail
+    assert "试试有共同人物或时间的物证" in detail
+    assert "本局还剩 3 次" in detail
 
 
 def test_combine_input_errors(
@@ -496,9 +516,10 @@ def test_combine_input_errors(
     )
 
     assert one.status_code == 422
-    assert one.json()["detail"] == "对撞需要两张不同的物证"
+    assert "对撞需要两张不同的物证" in one.json()["detail"]
+    assert "本局还剩 3 次" in one.json()["detail"]
     assert same.status_code == 422
-    assert same.json()["detail"] == "对撞需要两张不同的物证"
+    assert same.json()["detail"] == one.json()["detail"]
     assert unknown.status_code == 404
     assert unknown.json()["detail"] == "找不到这张线索"
     assert missing.status_code == 404

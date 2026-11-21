@@ -22,6 +22,9 @@ SECRET_FRAGMENT_LENGTH: Final[int] = 8
 PRESSURE_PER_CLUE: Final[float] = 0.25
 CONFRONT_PRESSURE: Final[float] = 0.10
 COMBINE_PRESSURE: Final[float] = 0.10
+COMBINE_REACTION_TEMPLATE: Final[str] = (
+    "门外有人咳了一声，{name}的语速慢了下来。"
+)
 MAX_COMBINE_PER_GAME: Final[int] = 3
 MAX_COMBO_TEXT_CHARS: Final[int] = 55
 MAX_PRESSURE: Final[float] = 1.0

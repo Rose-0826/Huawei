@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.config import MAX_COMBINE_PER_GAME, MAX_COMBO_TEXT_CHARS, MAX_PRESSURE
 from app.engine.combine import COMBO_RULES, find_rule
-from app.game import GameState, GameStore, accuse, combine
+from app.game import GameState, GameStore, accuse, build_view, combine
+from app.main import create_app
 from app.models import Script
 from app.script_loader import load_script
 
@@ -235,3 +237,145 @@ def test_combine_rejects_missing_or_ended_game(
     accuse(store, state.game_id, "r1")
 
     assert combine(store, state.game_id, ("c01", "c02")).error == "game_ended"
+
+def test_all_rules_match_in_both_orders() -> None:
+    assert len(COMBO_RULES) == 12
+
+    for rule in COMBO_RULES:
+        assert find_rule(rule.clue_ids) == rule
+        assert find_rule(tuple(reversed(rule.clue_ids))) == rule
+
+
+def test_c02_c07_text_names_zhou_and_not_lao_han_at_stairs() -> None:
+    rule = find_rule(("c02", "c07"))
+
+    assert rule is not None
+    assert rule.title == "封口动机"
+    assert "周砚青" in rule.text
+    assert "老韩在楼梯口" not in rule.text
+
+
+@pytest.mark.parametrize(
+    ("pair", "title"),
+    [
+        (("c02", "c08"), "时间线钉板"),
+        (("c03", "c08"), "争吵与凶器"),
+        (("c02", "c03"), "楼梯口与凶器"),
+        (("c05", "c08"), "旧账新账"),
+        (("c05", "c07"), "封口与旧案"),
+        (("c03", "c07"), "先动手再封口"),
+    ],
+)
+def test_reachable_combinations_succeed(
+    store: GameStore,
+    script: Script,
+    pair: tuple[str, str],
+    title: str,
+) -> None:
+    state = store.start(script)
+    _unlock(state, "c02", "c03", "c05", "c07", "c08")
+
+    outcome = combine(store, state.game_id, pair)
+
+    assert outcome.ok is True
+    assert outcome.title == title
+    assert outcome.remaining == MAX_COMBINE_PER_GAME - 1
+
+
+def test_combine_returns_reaction_and_target(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    _unlock(state, "c02", "c07")
+
+    outcome = combine(store, state.game_id, ("c07", "c02"))
+
+    assert outcome.target_npc_id == "r5"
+    assert outcome.reaction is not None
+    assert outcome.reaction.npc_id == "r5"
+    assert outcome.reaction.name == "老韩"
+    assert "老韩" in outcome.reaction.line
+    assert state.pressure["r5"] == pytest.approx(0.10)
+
+
+def test_combine_reaction_targets_culprit_for_timeline(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    _unlock(state, "c02", "c08")
+
+    outcome = combine(store, state.game_id, ("c02", "c08"))
+
+    assert outcome.target_npc_id == "r1"
+    assert outcome.reaction is not None
+    assert outcome.reaction.name == "沈玉兰"
+    assert outcome.reaction.line == (
+        "门外有人咳了一声，沈玉兰的语速慢了下来。"
+    )
+
+
+def test_view_exposes_combine_remaining(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    _unlock(state, "c01", "c02")
+
+    initial = build_view(state)
+    assert initial.combine_remaining == MAX_COMBINE_PER_GAME
+    assert initial.combine_max == MAX_COMBINE_PER_GAME
+
+    combine(store, state.game_id, ("c01", "c02"))
+
+    after = build_view(state)
+    assert after.combine_remaining == MAX_COMBINE_PER_GAME - 1
+    assert after.combine_max == MAX_COMBINE_PER_GAME
+
+
+def test_http_state_and_failure_detail_expose_remaining(
+    script: Script,
+) -> None:
+    store = GameStore()
+    client = TestClient(create_app(script, store))
+    game_id = client.post("/games").json()["game_id"]
+    state = store.get(game_id)
+    assert state is not None
+    _unlock(state, "c01", "c03")
+
+    state_body = client.get(f"/games/{game_id}").json()
+    assert state_body["combine_remaining"] == MAX_COMBINE_PER_GAME
+    assert state_body["combine_max"] == MAX_COMBINE_PER_GAME
+
+    response = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c03"]},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "这两张物证对不上" in detail
+    assert "试试有共同人物或时间的物证" in detail
+    assert f"本局还剩 {MAX_COMBINE_PER_GAME} 次" in detail
+
+
+def test_http_combine_exposes_reaction(script: Script) -> None:
+    store = GameStore()
+    client = TestClient(create_app(script, store))
+    game_id = client.post("/games").json()["game_id"]
+    state = store.get(game_id)
+    assert state is not None
+    _unlock(state, "c02", "c07")
+
+    response = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c02", "c07"]},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["target_npc_id"] == "r5"
+    assert data["reaction"]["npc_id"] == "r5"
+    assert data["reaction"]["name"] == "老韩"
+    assert data["remaining"] == MAX_COMBINE_PER_GAME - 1
