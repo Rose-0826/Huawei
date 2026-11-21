@@ -768,6 +768,355 @@ button:disabled {
   }
 }
 
+/* NPC 主动插话：像有人从廊下走到桌边，不是系统弹窗 */
+.social-event {
+  --social-accent: #d6ad63;
+  --social-accent-soft: rgba(214, 173, 99, 0.36);
+  --social-accent-wash: rgba(214, 173, 99, 0.12);
+  position: absolute;
+  top: clamp(292px, 38vh, 382px);
+  left: 50%;
+  z-index: 8;
+  display: flex;
+  gap: 11px;
+  width: min(430px, 46vw);
+  padding: 12px 14px;
+  border: 1px solid var(--social-accent);
+  border-radius: var(--radius-panel);
+  background:
+    linear-gradient(110deg, rgba(45, 32, 20, 0.97), rgba(13, 10, 7, 0.97) 58%),
+    var(--night);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 226, 168, 0.12),
+    0 1px 0 var(--edge-press);
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  transition:
+    opacity 0.26s ease,
+    transform 0.34s cubic-bezier(0.2, 0.8, 0.25, 1);
+  pointer-events: auto;
+}
+
+.social-event[data-kind="demand"] {
+  --social-accent: #b94b3a;
+  --social-accent-soft: rgba(185, 75, 58, 0.42);
+  --social-accent-wash: rgba(143, 51, 40, 0.2);
+}
+
+.social-event[data-kind="whisper"] {
+  --social-accent: #9fb4c3;
+  --social-accent-soft: rgba(159, 180, 195, 0.34);
+  --social-accent-wash: rgba(159, 180, 195, 0.1);
+}
+
+.social-event.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.social-event.leaving {
+  opacity: 0;
+  transform: translate(-50%, 4px);
+}
+
+body.social-event-open .speech {
+  opacity: 0.2;
+  transition: opacity 0.3s ease;
+}
+
+.social-figure {
+  position: relative;
+  flex: 0 0 54px;
+  width: 54px;
+  height: 66px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.social-figure::after {
+  content: "";
+  position: absolute;
+  bottom: -3px;
+  left: 50%;
+  width: 46px;
+  height: 8px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(0, 0, 0, 0.62), transparent 72%);
+  pointer-events: none;
+}
+
+.social-silhouette {
+  position: relative;
+  width: 38px;
+  height: 40px;
+  transform: scale(1.32);
+  transform-origin: bottom center;
+  filter: drop-shadow(0 0 6px var(--social-accent-wash));
+}
+
+.social-event.visible .social-figure {
+  animation: socialStepIn 0.55s cubic-bezier(0.2, 0.85, 0.25, 1.1) both;
+}
+
+@keyframes socialStepIn {
+  from {
+    opacity: 0;
+    transform: translateX(-15px) translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) translateY(0);
+  }
+}
+
+.social-event-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.social-event-kicker {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 1px;
+  overflow: hidden;
+  color: var(--ink-dim);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.4;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.social-event-target {
+  overflow: hidden;
+  color: var(--social-accent);
+  text-overflow: ellipsis;
+}
+
+.social-event-target::before {
+  content: "· ";
+}
+
+.social-event-speaker {
+  margin: 0;
+  color: var(--gold-bright);
+  font-size: 15px;
+  line-height: 1.4;
+  letter-spacing: 0.12em;
+}
+
+.social-event-line {
+  margin: 3px 0 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.65;
+  letter-spacing: 0.02em;
+}
+
+.social-event-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.social-choice {
+  padding: 5px 13px;
+  border: 1px solid var(--social-accent-soft);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.26);
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  transition:
+    border-color 0.2s ease,
+    color 0.2s ease,
+    background 0.2s ease;
+}
+
+.social-choice[data-choice="press"] {
+  border-color: var(--social-accent);
+  background: var(--social-accent-wash);
+}
+
+.social-choice[data-choice="dismiss"] {
+  color: var(--ink-soft);
+  border-color: rgba(214, 173, 99, 0.24);
+}
+
+.social-choice:hover:not(:disabled),
+.social-choice:focus-visible {
+  border-color: var(--social-accent);
+  color: var(--gold-bright);
+  background: var(--social-accent-wash);
+  outline: none;
+}
+
+.social-choice:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.social-event.resolved .social-event-kicker,
+.social-event.resolved .social-event-line,
+.social-event.resolved .social-event-choices {
+  display: none;
+}
+
+.social-event.resolved {
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+
+.social-event-reply {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.7;
+  letter-spacing: 0.02em;
+}
+
+.social-event-effects {
+  margin: 7px 0 0;
+  padding-top: 6px;
+  border-top: 1px dashed var(--social-accent-soft);
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+}
+
+.side-suspect.social-call {
+  border-color: rgba(214, 173, 99, 0.5);
+  background: rgba(214, 173, 99, 0.06);
+}
+
+.side-suspect.social-call::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(255, 226, 168, 0.4);
+  animation: socialCallPulse 1.5s ease-in-out 2;
+  pointer-events: none;
+}
+
+@keyframes socialCallPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (min-width: 821px) {
+  .confront-log.social-tucked {
+    max-height: clamp(112px, 15vh, 156px);
+    overflow: hidden;
+  }
+}
+
+/* 侧探小剪影沿用五个角色的辨识特征 */
+.social-figure.role-r1 .mini-head::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 10px;
+  height: 8px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background:
+    var(--tex-wool),
+    linear-gradient(160deg, #1a130d, #070504 70%);
+  border: 1px solid rgba(255, 226, 168, 0.14);
+}
+
+.social-figure.role-r2 .mini-head::before,
+.social-figure.role-r2 .mini-head::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgba(214, 173, 99, 0.5);
+  border-radius: 50%;
+}
+
+.social-figure.role-r2 .mini-head::before {
+  left: -1px;
+}
+
+.social-figure.role-r2 .mini-head::after {
+  right: -1px;
+}
+
+.social-figure.role-r3 .mini-head::before,
+.social-figure.role-r3 .mini-head::after {
+  content: "";
+  position: absolute;
+  top: 9px;
+  width: 5px;
+  height: 18px;
+  border-radius: var(--radius-paper);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 226, 168, 0.055) 0 2px,
+      transparent 2px 6px
+    ),
+    linear-gradient(170deg, #1b140e, #080604 70%);
+  border: 1px solid rgba(255, 226, 168, 0.12);
+}
+
+.social-figure.role-r3 .mini-head::before {
+  left: -6px;
+  transform: rotate(7deg);
+}
+
+.social-figure.role-r3 .mini-head::after {
+  right: -6px;
+  transform: rotate(-7deg);
+}
+
+.social-figure.role-r4 .mini-head::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 16px;
+  height: 9px;
+  transform: translateX(-50%);
+  border-radius: var(--radius-paper) var(--radius-paper) 0 0;
+  background:
+    var(--tex-wool),
+    linear-gradient(160deg, #1b140e, #070504 70%);
+  border: 1px solid rgba(255, 226, 168, 0.14);
+}
+
+.social-figure.role-r5 .mini-head::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  width: 18px;
+  height: 9px;
+  transform: translateX(-50%);
+  border-radius: 50% 50% 25% 25%;
+  background:
+    var(--tex-tweed),
+    linear-gradient(160deg, #19120c, #060403);
+  border: 1px solid rgba(255, 226, 168, 0.14);
+}
+
 .chair {
   position: absolute;
   left: 50%;
@@ -2087,6 +2436,30 @@ body.evidence-open .actor-id {
     overscroll-behavior-y: contain;
   }
 
+  .social-event {
+    top: 132px;
+    left: 96px;
+    right: 20px;
+    width: auto;
+    transform: translateY(10px);
+  }
+
+  .social-event.visible {
+    transform: translateY(0);
+  }
+
+  .social-event.leaving {
+    transform: translateY(4px);
+  }
+
+  .confront-log.social-tucked {
+    display: none;
+  }
+
+  body.social-event-open .table-focus {
+    top: 42%;
+  }
+
   .scene {
     height: auto;
     min-height: 100vh;
@@ -2286,6 +2659,46 @@ body.evidence-open .actor-id {
     flex-wrap: wrap;
     gap: 10px;
     padding: 16px 18px 26px;
+  }
+
+  .social-event {
+    top: 140px;
+    left: 84px;
+    right: 12px;
+    gap: 9px;
+    padding: 10px 12px;
+  }
+
+  .social-figure {
+    flex-basis: 46px;
+    width: 46px;
+    height: 58px;
+  }
+
+  .social-silhouette {
+    transform: scale(1.14);
+  }
+
+  .social-event-kicker {
+    display: none;
+  }
+
+  .social-event-line {
+    font-size: 13.5px;
+    line-height: 1.6;
+  }
+
+  .social-event-choices {
+    margin-top: 8px;
+  }
+
+  .social-choice {
+    padding: 4px 11px;
+    font-size: 13px;
+  }
+
+  .social-event-reply {
+    font-size: 13.5px;
   }
 
   .header-actions {

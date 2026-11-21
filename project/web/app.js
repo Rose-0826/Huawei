@@ -21,6 +21,9 @@ const state = {
   ended: false,
   accuseArmed: false,
   accuseTimer: null,
+  socialEvent: null,
+  socialToken: 0,
+  socialResolving: false,
 };
 
 let speechToken = 0;
@@ -31,10 +34,71 @@ let lookTimer = null;
 let evidenceTimer = null;
 let evidenceHideTimer = null;
 let combineTimer = null;
+let socialHideTimer = null;
+let socialCallTimer = null;
 
 const reduceMotion = window.matchMedia
   ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
   : false;
+
+const SOCIAL_KIND_LABELS = {
+  approach: "廊下有人走近",
+  demand: "他拦住了你",
+  whisper: "廊下低声",
+};
+const SOCIAL_CHOICE_LABELS = {
+  press: "追问他",
+  dismiss: "让他走",
+};
+const SOCIAL_MOCK = /(?:^|[?&])event-mock=1(?:&|$)/.test(
+  window.location.search
+);
+const SOCIAL_PREVIEW_KIND = (() => {
+  const match = window.location.search.match(
+    /[?&]event-preview=(approach|demand|whisper)(?:&|$)/
+  );
+  return match ? match[1] : null;
+})();
+
+const SOCIAL_MOCK_EVENTS = [
+  {
+    id: "mock-e1",
+    kind: "approach",
+    speaker: { id: "r5", name: "老韩" },
+    target: { id: "r1", name: "沈玉兰" },
+    line: "您别再逼沈太太了，23:05 楼梯口的事我瞧见了，手帕是她的，可那不代表什么。",
+    choices: [
+      { id: "press", label: "追问他" },
+      { id: "dismiss", label: "让他走" },
+    ],
+    press_reply: "您非要这么问，那 23:35 的事我就不瞒了。",
+  },
+  {
+    id: "mock-e2",
+    kind: "demand",
+    speaker: { id: "r1", name: "沈玉兰" },
+    target: null,
+    line: "您手里那张 23:05 的记录，是从楼梯口得来的？您先说清楚，我才敢说银元的事。",
+    choices: [
+      { id: "press", label: "追问他" },
+      { id: "dismiss", label: "让他走" },
+    ],
+    press_reply: "您要这么逼我，那我今晚就更没什么好说的了。",
+  },
+  {
+    id: "mock-e3",
+    kind: "whisper",
+    speaker: { id: "r2", name: "周砚青" },
+    target: { id: "r5", name: "老韩" },
+    line: "有件事我一直没说：23:35 老韩收了一包银元，叫我别跟您提二楼的事。",
+    choices: [
+      { id: "press", label: "追问他" },
+      { id: "dismiss", label: "让他走" },
+    ],
+    press_reply: "话说到这儿，我再多嘴，可就不好收场了。",
+  },
+];
+let socialMockCursor = 0;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -653,6 +717,304 @@ function setPressure(npcId, value, animate = false) {
   recoilTimer = setTimeout(() => actor.classList.remove("recoiling"), 1800);
 }
 
+function socialSpeakerOf(event) {
+  const raw = event && event.speaker ? event.speaker : {};
+  const role = state.roles.find((item) => item.id === raw.id);
+  return {
+    id: raw.id || (role ? role.id : ""),
+    name: raw.name || (role ? role.name : ""),
+  };
+}
+
+function clearSocialEventUI() {
+  clearTimeout(socialHideTimer);
+  socialHideTimer = null;
+  const card = $("#social-event");
+  if (!card) {
+    return;
+  }
+  card.classList.remove("visible", "leaving", "resolved");
+  card.classList.add("hidden");
+  document.body.classList.remove("social-event-open");
+  const log = $("#confront-log");
+  if (log) {
+    log.classList.remove("social-tucked");
+  }
+  clearTimeout(socialCallTimer);
+  document.querySelectorAll(".side-suspect.social-call").forEach((node) => {
+    node.classList.remove("social-call");
+  });
+  state.socialEvent = null;
+  state.socialResolving = false;
+}
+
+function hideSocialEvent() {
+  state.socialToken += 1;
+  clearSocialEventUI();
+}
+
+function markSocialCall(npcId) {
+  clearTimeout(socialCallTimer);
+  document.querySelectorAll(".side-suspect.social-call").forEach((node) => {
+    node.classList.remove("social-call");
+  });
+  if (!npcId) {
+    return;
+  }
+  const button = document.querySelector(`.side-suspect[data-npc="${npcId}"]`);
+  if (!button) {
+    return;
+  }
+  button.classList.add("social-call");
+  socialCallTimer = setTimeout(
+    () => button.classList.remove("social-call"),
+    3200
+  );
+}
+
+function renderSocialChoices(event) {
+  const box = $("#social-event-choices");
+  box.innerHTML = "";
+  const raw = Array.isArray(event.choices) && event.choices.length > 0
+    ? event.choices
+    : [
+      { id: "press", label: SOCIAL_CHOICE_LABELS.press },
+      { id: "dismiss", label: SOCIAL_CHOICE_LABELS.dismiss },
+    ];
+  for (const choice of raw) {
+    const id = choice && choice.id;
+    if (id !== "press" && id !== "dismiss") {
+      continue;
+    }
+    const button = element(
+      "button",
+      "social-choice",
+      choice.label || SOCIAL_CHOICE_LABELS[id]
+    );
+    button.type = "button";
+    button.dataset.choice = id;
+    button.addEventListener("click", () => respondSocialEvent(id));
+    box.appendChild(button);
+  }
+}
+
+function showSocialEvent(event) {
+  if (!event || typeof event !== "object" || !event.line) {
+    return;
+  }
+  clearSocialEventUI();
+  const card = $("#social-event");
+  const speaker = socialSpeakerOf(event);
+  const kind = SOCIAL_KIND_LABELS[event.kind] ? event.kind : "approach";
+  card.dataset.kind = kind;
+  $("#social-event-kind").textContent = SOCIAL_KIND_LABELS[kind];
+  $("#social-event-speaker").textContent = speaker.name || "有人";
+
+  const targetNode = $("#social-event-target");
+  const target = event.target && (event.target.name || event.target.id)
+    ? event.target
+    : null;
+  if (target) {
+    targetNode.textContent = `提到 ${target.name || target.id}`;
+    targetNode.classList.remove("hidden");
+  } else {
+    targetNode.textContent = "";
+    targetNode.classList.add("hidden");
+  }
+
+  $("#social-event-line").textContent = String(event.line);
+  renderSocialChoices(event);
+  const reply = $("#social-event-reply");
+  reply.textContent = "";
+  reply.classList.add("hidden");
+  const effects = $("#social-event-effects");
+  effects.textContent = "";
+  effects.classList.add("hidden");
+
+  const figure = $("#social-figure");
+  for (const role of state.roles) {
+    figure.classList.remove(`role-${role.id}`);
+  }
+  if (speaker.id) {
+    figure.classList.add(`role-${speaker.id}`);
+  }
+
+  state.socialEvent = event;
+  const log = $("#confront-log");
+  if (log && !log.classList.contains("hidden")) {
+    log.classList.add("social-tucked");
+  }
+  document.body.classList.add("social-event-open");
+  card.classList.remove("hidden", "leaving", "resolved");
+  void card.offsetWidth;
+  card.classList.add("visible");
+  markSocialCall(speaker.id);
+}
+
+function applySocialPressure(pressure) {
+  const lines = [];
+  if (!pressure || typeof pressure !== "object" || Array.isArray(pressure)) {
+    return lines;
+  }
+  for (const [npcId, value] of Object.entries(pressure)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      continue;
+    }
+    const role = state.roles.find((item) => item.id === npcId);
+    const name = role ? role.name : npcId;
+    const before = state.pressure[npcId] ?? 0;
+    const next = Math.max(0, Math.min(1, value));
+    setPressure(npcId, next, next > before + 0.0001);
+    const delta = next - before;
+    if (delta > 0.0001) {
+      lines.push(`${name} · 压力 +${delta.toFixed(2)}`);
+    } else if (delta < -0.0001) {
+      lines.push(`${name} · 压力 ${delta.toFixed(2)}`);
+    } else {
+      lines.push(`${name} · 压力 ${next.toFixed(2)}`);
+    }
+  }
+  updateSideRailMoods();
+  return lines;
+}
+
+function showSocialResolution(reply, lines, unlockedClue) {
+  const card = $("#social-event");
+  if (!card) {
+    return;
+  }
+  card.classList.add("resolved");
+  const replyNode = $("#social-event-reply");
+  replyNode.textContent = reply || "他没再开口。";
+  replyNode.classList.remove("hidden");
+  const effects = $("#social-event-effects");
+  const parts = lines.slice();
+  if (unlockedClue && unlockedClue.name) {
+    parts.push(`取得物证：${unlockedClue.name}`);
+  }
+  if (parts.length > 0) {
+    effects.textContent = parts.join(" · ");
+    effects.classList.remove("hidden");
+  } else {
+    effects.textContent = "";
+    effects.classList.add("hidden");
+  }
+  clearTimeout(socialHideTimer);
+  socialHideTimer = setTimeout(() => {
+    const node = $("#social-event");
+    if (!node) {
+      return;
+    }
+    node.classList.add("leaving");
+    socialHideTimer = setTimeout(clearSocialEventUI, 320);
+  }, 2500);
+}
+
+function mockSocialResult(event, choice) {
+  const speaker = socialSpeakerOf(event);
+  const before = state.pressure[speaker.id] ?? 0;
+  if (choice === "dismiss") {
+    return {
+      reply: "他退了半步，像是还想说什么，终究还是转身回了廊下。",
+      pressure: speaker.id
+        ? { [speaker.id]: Math.min(1, before + 0.05) }
+        : {},
+      event: null,
+    };
+  }
+  return {
+    reply: event.press_reply || "他压低声音，补了一句没头没尾的话。",
+    pressure: speaker.id
+      ? { [speaker.id]: Math.min(1, before + 0.1) }
+      : {},
+    event: null,
+  };
+}
+
+async function respondSocialEvent(choice) {
+  const event = state.socialEvent;
+  if (!event || state.socialResolving || state.ended) {
+    return;
+  }
+  if (choice !== "press" && choice !== "dismiss") {
+    return;
+  }
+  state.socialResolving = true;
+  const card = $("#social-event");
+  card.querySelectorAll(".social-choice").forEach((button) => {
+    button.disabled = true;
+  });
+
+  let data = null;
+  try {
+    if (SOCIAL_MOCK) {
+      await sleep(180);
+      data = mockSocialResult(event, choice);
+    } else {
+      data = await api(`/games/${state.gameId}/event`, {
+        method: "POST",
+        body: JSON.stringify({ choice }),
+      });
+    }
+  } catch (error) {
+    const silent = error.status === 404 || error.status === 405 ||
+      error.status === 409;
+    const stillCurrent = state.socialEvent === event;
+    state.socialResolving = false;
+    if (!stillCurrent) {
+      return;
+    }
+    clearSocialEventUI();
+    if (!silent) {
+      toast(error.detail || "他没再说下去", "warn");
+    }
+    return;
+  }
+
+  state.socialResolving = false;
+  if (state.socialEvent !== event) {
+    return;
+  }
+  const lines = applySocialPressure(data && data.pressure);
+  if (data && data.unlocked_clue) {
+    mergeClue(data.unlocked_clue);
+  }
+  showSocialResolution(
+    data && data.reply,
+    lines,
+    data && data.unlocked_clue ? data.unlocked_clue : null
+  );
+}
+
+async function checkSocialEvent() {
+  if (!state.gameId || state.ended) {
+    return;
+  }
+  const gameId = state.gameId;
+  const token = ++state.socialToken;
+  let payload = null;
+  if (SOCIAL_MOCK) {
+    await sleep(240);
+    payload = {
+      event: SOCIAL_MOCK_EVENTS[socialMockCursor % SOCIAL_MOCK_EVENTS.length],
+    };
+    socialMockCursor += 1;
+  } else {
+    try {
+      payload = await api(`/games/${gameId}/event`);
+    } catch (error) {
+      return;
+    }
+  }
+  if (token !== state.socialToken || gameId !== state.gameId || state.ended) {
+    return;
+  }
+  const event = payload && payload.event ? payload.event : null;
+  if (event) {
+    showSocialEvent(event);
+  }
+}
+
 function applyConfrontPressure(payload) {
   const pressure = payload || {};
   if (typeof pressure === "number") {
@@ -1024,6 +1386,7 @@ async function handleCombine() {
 
   state.busy = true;
   refreshControls();
+  hideSocialEvent();
 
   try {
     const data = await api(`/games/${state.gameId}/combine`, {
@@ -1045,6 +1408,7 @@ async function handleCombine() {
     await flyCombineToTable(first, second);
     showCombineCard(data, pressureLines);
     refreshControls();
+    void checkSocialEvent();
   } catch (error) {
     const notReady = error.status === 404 || error.status === 405;
     let message = error.detail || "";
@@ -1118,6 +1482,7 @@ async function handleConfront(event) {
   state.busy = true;
   $("#question-input").value = "";
   refreshControls();
+  hideSocialEvent();
   $("#speech").classList.add("hidden");
   hideCombineCard();
   resetConfrontSession();
@@ -1138,6 +1503,7 @@ async function handleConfront(event) {
     }
     applyConfrontPressure(data.pressure || {});
     renderConfront(data, question);
+    void checkSocialEvent();
   } catch (error) {
     toast(error.detail || "两人没有对上话", "warn");
     $("#speech").classList.remove("hidden");
@@ -1171,6 +1537,7 @@ async function handleAsk(event) {
   state.busy = true;
   input.value = "";
   refreshControls();
+  hideSocialEvent();
   clearConfrontLog();
   $("#speech").classList.remove("hidden");
   hideCombineCard();
@@ -1189,6 +1556,7 @@ async function handleAsk(event) {
       mergeClue(data.unlocked_clue);
     }
     await speak(data.reply);
+    void checkSocialEvent();
   } catch (error) {
     await speak("他没有接话。", { narration: true });
     toast(error.detail || "这一问没有得到回应", "warn");
@@ -1223,6 +1591,7 @@ async function handlePresent() {
   const pressureBefore = state.pressure[role.id] ?? 0;
   state.busy = true;
   refreshControls();
+  hideSocialEvent();
   hideCombineCard();
   $("#actor").classList.add("looking");
   clearTimeout(lookTimer);
@@ -1248,6 +1617,7 @@ async function handlePresent() {
     await speak(data.reply);
     state.selectedClueId = null;
     renderClues();
+    void checkSocialEvent();
   } catch (error) {
     presentToken += 1;
     clearTimeout(lookTimer);
@@ -1301,6 +1671,7 @@ async function handleAccuse() {
   resetAccuseArm();
   state.busy = true;
   refreshControls();
+  hideSocialEvent();
 
   try {
     const data = await api(`/games/${state.gameId}/accuse`, {
@@ -1418,6 +1789,10 @@ function resetUI() {
   state.combineTarget = null;
   state.busy = false;
   state.ended = false;
+  state.socialEvent = null;
+  state.socialResolving = false;
+  state.socialToken += 1;
+  socialMockCursor = 0;
   resetAccuseArm();
   clearTimeout(arriveTimer);
   clearTimeout(recoilTimer);
@@ -1425,6 +1800,9 @@ function resetUI() {
   clearTimeout(evidenceTimer);
   clearTimeout(evidenceHideTimer);
   clearTimeout(combineTimer);
+  clearTimeout(socialHideTimer);
+  clearTimeout(socialCallTimer);
+  clearSocialEventUI();
   document.querySelectorAll(".clue-fly").forEach((fly) => fly.remove());
 
   $("#side-rail").innerHTML = "";
@@ -1500,6 +1878,14 @@ async function startGame() {
       syncCombineState();
     }
     speak(data.opening, { narration: true });
+    if (SOCIAL_PREVIEW_KIND) {
+      const preview = SOCIAL_MOCK_EVENTS.find(
+        (item) => item.kind === SOCIAL_PREVIEW_KIND
+      );
+      if (preview) {
+        setTimeout(() => showSocialEvent(preview), 700);
+      }
+    }
   } catch (error) {
     await speak("今晚没有接通。", { narration: true });
     toast("游戏服务连接失败", "warn");
