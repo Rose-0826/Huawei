@@ -110,6 +110,18 @@
           <button id="primary-button" class="primary-button hidden" type="button">投票</button>
         </div>
       </div>
+      <div id="ballot-panel" class="ballot-panel hidden" role="group" aria-label="投票面板">
+        <div class="ballot-head">
+          <span class="ballot-kicker">落票</span>
+          <span id="ballot-note" class="ballot-note">可投任意在场的人</span>
+        </div>
+        <div id="ballot-options" class="ballot-options" role="group" aria-label="投票目标"></div>
+        <label class="ballot-reason" for="ballot-reason">
+          <span>理由（可选）</span>
+          <input id="ballot-reason" type="text" maxlength="80"
+                 placeholder="为什么投这一票？可留空">
+        </label>
+      </div>
       <div id="confirm-strip" class="confirm-strip hidden" role="alertdialog" aria-live="assertive">
         <span id="confirm-text"></span>
         <button id="confirm-yes" class="primary-button" type="button">确认</button>
@@ -123,9 +135,14 @@
   <section id="end-overlay" class="end-overlay hidden" role="dialog" aria-modal="true"
            aria-labelledby="end-title" aria-hidden="true">
     <div id="end-frame" class="end-frame" data-result="villagers">
+      <div id="end-portrait" class="end-portrait" aria-hidden="true"></div>
       <p id="end-kicker" class="kicker">DAWN · 结局</p>
       <h2 id="end-title">好人胜</h2>
       <p id="end-subtitle" class="end-subtitle">雪停了。</p>
+      <section id="end-aftermath" class="end-aftermath hidden" aria-label="逐日卷宗">
+        <p class="end-aftermath-title">CASE NOTES · 逐日卷宗</p>
+        <ol id="end-aftermath-list" class="end-aftermath-list"></ol>
+      </section>
       <dl class="end-facts">
         <div>
           <dt>凶手</dt>
@@ -144,6 +161,7 @@
           <dd id="end-days">1 天</dd>
         </div>
       </dl>
+      <p id="end-fatal" class="end-fatal hidden"></p>
       <p id="end-message" class="end-message">凶手、死者，以及每一个没说出口的谎，都留在这一夜。</p>
       <div class="end-actions">
         <button id="end-log" class="ghost-button" type="button">查看本局记录</button>
