@@ -21,6 +21,11 @@ const state = {
   ended: false,
   accuseArmed: false,
   accuseTimer: null,
+  verdictOptions: null,
+  verdictOptionsLoaded: false,
+  accusePanelOpen: false,
+  accuseRole: null,
+  accuseChoice: { motive: null, method: null, time: null },
   socialEvent: null,
   socialToken: 0,
   socialResolving: false,
@@ -99,6 +104,50 @@ const SOCIAL_MOCK_EVENTS = [
   },
 ];
 let socialMockCursor = 0;
+
+const ACCUSE_MOCK = /(?:^|[?&])accuse-mock=1(?:&|$)/.test(
+  window.location.search
+);
+const ACCUSE_MOCK_OPTIONS = {
+  motive: [
+    { id: "m_old_case", label: "掩盖旧案" },
+    { id: "m_money", label: "账目亏空" },
+    { id: "m_affair", label: "私情败露" },
+  ],
+  method: [
+    { id: "w_paperweight", label: "镇纸" },
+    { id: "w_poker", label: "火钳" },
+    { id: "w_bottle", label: "酒瓶" },
+  ],
+  time: [
+    { id: "t_2250", label: "22:50" },
+    { id: "t_2305", label: "23:05" },
+    { id: "t_2310", label: "23:10" },
+  ],
+};
+const ACCUSE_MOCK_ANSWERS = {
+  motive: "m_old_case",
+  method: "w_paperweight",
+  time: "t_2250",
+};
+const ACCUSE_MOCK_TIMELINE = [
+  { fact_id: "f05", text: "" },
+  {
+    fact_id: "f06",
+    text: "23:05，周砚青在楼梯口碰见沈玉兰，她把手帕攥得死紧。",
+  },
+  { fact_id: "f08", text: "" },
+  { fact_id: "f15", text: "" },
+  { fact_id: "f16", text: "" },
+];
+const ACCUSE_MOCK_MISSED = ["f05", "f08", "f15", "f16"];
+
+const VERDICT_DIMENSIONS = ["motive", "method", "time"];
+const VERDICT_DIMENSION_LABELS = {
+  motive: "动机",
+  method: "手法",
+  time: "时间",
+};
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -1649,8 +1698,17 @@ function resetAccuseArm() {
   }
 }
 
+function hasVerdictOptions(options) {
+  if (!options || typeof options !== "object") {
+    return false;
+  }
+  return VERDICT_DIMENSIONS.every(
+    (dim) => Array.isArray(options[dim]) && options[dim].length > 0
+  );
+}
+
 async function handleAccuse() {
-  if (state.busy || state.ended) {
+  if (state.busy || state.ended || state.accusePanelOpen) {
     return;
   }
   const role = currentRole();
@@ -1658,6 +1716,34 @@ async function handleAccuse() {
     toast("先选一个人", "warn");
     return;
   }
+  if (ACCUSE_MOCK) {
+    state.verdictOptions = ACCUSE_MOCK_OPTIONS;
+    state.verdictOptionsLoaded = true;
+    openAccusePanel(role);
+    return;
+  }
+  if (!state.verdictOptionsLoaded) {
+    state.busy = true;
+    refreshControls();
+    try {
+      const data = await api(`/games/${state.gameId}`);
+      state.verdictOptions = data.verdict_options || null;
+    } catch (error) {
+      state.verdictOptions = null;
+    } finally {
+      state.verdictOptionsLoaded = true;
+      state.busy = false;
+      refreshControls();
+    }
+  }
+  if (hasVerdictOptions(state.verdictOptions)) {
+    openAccusePanel(role);
+    return;
+  }
+  legacyArmAccuse(role);
+}
+
+function legacyArmAccuse(role) {
   if (!state.accuseArmed) {
     state.accuseArmed = true;
     const button = $("#accuse-button");
@@ -1667,7 +1753,10 @@ async function handleAccuse() {
     state.accuseTimer = setTimeout(resetAccuseArm, 4000);
     return;
   }
+  void legacyAccuse(role);
+}
 
+async function legacyAccuse(role) {
   resetAccuseArm();
   state.busy = true;
   refreshControls();
@@ -1680,7 +1769,7 @@ async function handleAccuse() {
     });
     state.ended = true;
     hideCombineCard();
-    showVerdict(data, role);
+    showVerdict(data, role, null);
   } catch (error) {
     toast(error.detail || "指认失败", "warn");
   } finally {
@@ -1689,16 +1778,282 @@ async function handleAccuse() {
   }
 }
 
+function openAccusePanel(role) {
+  const options = state.verdictOptions || {};
+  state.accuseRole = role;
+  state.accusePanelOpen = true;
+  state.accuseChoice = { motive: null, method: null, time: null };
+
+  const suspect = $("#accuse-suspect");
+  suspect.textContent = role.public
+    ? `${role.name} · ${role.public}`
+    : role.name;
+
+  const panel = $("#accuse-panel");
+  VERDICT_DIMENSIONS.forEach((dim) => {
+    const items = Array.isArray(options[dim]) ? options[dim] : [];
+    renderAccuseOptions(dim, items);
+    const card = panel.querySelector(`.accuse-card[data-dim="${dim}"]`);
+    if (card) {
+      card.classList.remove("pressed");
+      const tag = card.querySelector(".accuse-card-state");
+      if (tag) {
+        tag.textContent = "未定";
+      }
+    }
+  });
+
+  panel.classList.remove("hidden");
+  panel.setAttribute("aria-hidden", "false");
+  hideSocialEvent();
+  updateAccuseControls();
+  const first = panel.querySelector(".accuse-option");
+  if (first) {
+    first.focus();
+  }
+}
+
+function closeAccusePanel(restoreFocus = true) {
+  if (!state.accusePanelOpen) {
+    return;
+  }
+  state.accusePanelOpen = false;
+  const panel = $("#accuse-panel");
+  panel.classList.add("hidden");
+  panel.setAttribute("aria-hidden", "true");
+  if (restoreFocus) {
+    $("#accuse-button").focus();
+  }
+}
+
+function resetAccusePanel() {
+  state.accusePanelOpen = false;
+  state.accuseRole = null;
+  state.accuseChoice = { motive: null, method: null, time: null };
+  const panel = $("#accuse-panel");
+  if (!panel) {
+    return;
+  }
+  panel.classList.add("hidden");
+  panel.setAttribute("aria-hidden", "true");
+  VERDICT_DIMENSIONS.forEach((dim) => {
+    const box = $(`#accuse-options-${dim}`);
+    if (box) {
+      box.innerHTML = "";
+    }
+    const card = panel.querySelector(`.accuse-card[data-dim="${dim}"]`);
+    if (card) {
+      card.classList.remove("pressed");
+      const tag = card.querySelector(".accuse-card-state");
+      if (tag) {
+        tag.textContent = "未定";
+      }
+    }
+  });
+  const hint = $("#accuse-hint");
+  if (hint) {
+    hint.textContent = "还差三格：动机、手法、时间。";
+    hint.classList.remove("ready");
+  }
+  const submit = $("#accuse-submit");
+  if (submit) {
+    submit.disabled = true;
+  }
+  const suspect = $("#accuse-suspect");
+  if (suspect) {
+    suspect.textContent = "";
+  }
+}
+
+function renderAccuseOptions(dim, items) {
+  const box = $(`#accuse-options-${dim}`);
+  box.innerHTML = "";
+  items.forEach((item) => {
+    const value = String(item.id);
+    const label = item.label !== undefined && item.label !== null
+      ? String(item.label)
+      : value;
+    const option = element("button", "accuse-option");
+    option.type = "button";
+    option.dataset.value = value;
+    option.setAttribute("role", "radio");
+    option.setAttribute("aria-checked", "false");
+    option.appendChild(element("span", "accuse-option-label", label));
+    option.addEventListener("click", () => chooseAccuseOption(dim, value));
+    box.appendChild(option);
+  });
+}
+
+function chooseAccuseOption(dim, value) {
+  if (!state.accusePanelOpen || state.busy || state.ended) {
+    return;
+  }
+  state.accuseChoice[dim] = value;
+  const box = $(`#accuse-options-${dim}`);
+  const options = box.querySelectorAll(".accuse-option");
+  options.forEach((option) => {
+    const picked = option.dataset.value === value;
+    option.classList.toggle("selected", picked);
+    option.setAttribute("aria-checked", picked ? "true" : "false");
+  });
+  const card = box.closest(".accuse-card");
+  if (card) {
+    card.classList.add("pressed");
+    const tag = card.querySelector(".accuse-card-state");
+    if (tag) {
+      tag.textContent = "按定";
+    }
+  }
+  updateAccuseControls();
+}
+
+function updateAccuseControls() {
+  const missing = VERDICT_DIMENSIONS.filter(
+    (dim) => !state.accuseChoice[dim]
+  );
+  const ready = missing.length === 0;
+  const submit = $("#accuse-submit");
+  if (submit) {
+    submit.disabled = !ready || state.busy || state.ended;
+  }
+  const hint = $("#accuse-hint");
+  if (hint) {
+    hint.textContent = ready
+      ? "三张卡都按住了，落章提交。"
+      : `还差 ${missing.length} 格：${missing
+          .map((dim) => VERDICT_DIMENSION_LABELS[dim])
+          .join("、")}`;
+    hint.classList.toggle("ready", ready);
+  }
+}
+
+function mockAccuseResult(choice) {
+  const dimensions = VERDICT_DIMENSIONS.map((dim) => ({
+    id: dim,
+    label: VERDICT_DIMENSION_LABELS[dim],
+    choice: choice[dim],
+    correct: choice[dim] === ACCUSE_MOCK_ANSWERS[dim],
+  }));
+  const correct = dimensions.every((item) => item.correct);
+  return {
+    correct,
+    partial: !correct && dimensions.some((item) => item.correct),
+    dimensions,
+    timeline: ACCUSE_MOCK_TIMELINE,
+    missed_fact_ids: ACCUSE_MOCK_MISSED,
+  };
+}
+
+async function submitAccuse() {
+  if (state.busy || state.ended || !state.accusePanelOpen) {
+    return;
+  }
+  const role = state.accuseRole;
+  if (!role) {
+    return;
+  }
+  const choice = { ...state.accuseChoice };
+  if (VERDICT_DIMENSIONS.some((dim) => !choice[dim])) {
+    toast("三格还没选满", "warn");
+    updateAccuseControls();
+    return;
+  }
+
+  state.busy = true;
+  updateAccuseControls();
+  refreshControls();
+  try {
+    const data = ACCUSE_MOCK
+      ? mockAccuseResult(choice)
+      : await api(`/games/${state.gameId}/accuse`, {
+          method: "POST",
+          body: JSON.stringify({
+            suspect_id: role.id,
+            motive: choice.motive,
+            method: choice.method,
+            time: choice.time,
+          }),
+        });
+    state.ended = true;
+    hideCombineCard();
+    closeAccusePanel(false);
+    showVerdict(data, role, choice);
+  } catch (error) {
+    toast(error.detail || "指认失败", "warn");
+  } finally {
+    state.busy = false;
+    updateAccuseControls();
+    refreshControls();
+  }
+}
+
 function factKey(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-function showVerdict(data, role) {
+function dimensionChoiceLabel(dim, value) {
+  if (value === undefined || value === null || value === "") {
+    return "未选";
+  }
+  const items =
+    state.verdictOptions && Array.isArray(state.verdictOptions[dim])
+      ? state.verdictOptions[dim]
+      : [];
+  const hit = items.find((item) => String(item.id) === String(value));
+  return hit && hit.label !== undefined && hit.label !== null
+    ? String(hit.label)
+    : String(value);
+}
+
+function renderVerdictDimensions(dimensions, choice) {
+  const box = $("#verdict-dimensions");
+  box.innerHTML = "";
+  if (!Array.isArray(dimensions) || dimensions.length === 0) {
+    box.classList.add("hidden");
+    return;
+  }
+  dimensions.forEach((dim) => {
+    const id = String(dim.id || "");
+    const label = dim.label || VERDICT_DIMENSION_LABELS[id] || id;
+    const raw =
+      dim.choice !== undefined && dim.choice !== null
+        ? dim.choice
+        : choice
+          ? choice[id]
+          : "";
+    const text = dimensionChoiceLabel(id, raw);
+    const ok = Boolean(dim.correct);
+    const row = element("p", `verdict-dimension ${ok ? "ok" : "bad"}`);
+    row.appendChild(element("span", "dimension-label", `${label}：`));
+    row.appendChild(element("span", "dimension-choice", text));
+    row.appendChild(element("span", "dimension-mark", ok ? "✓" : "✗"));
+    row.setAttribute(
+      "aria-label",
+      `${label}：${text}，${ok ? "正确" : "错误"}`
+    );
+    box.appendChild(row);
+  });
+  box.classList.remove("hidden");
+}
+
+function showVerdict(data, role, choice) {
   const overlay = $("#verdict");
   const title = $("#verdict-title");
-  title.textContent = data.correct ? "指认成立" : "指认不成立";
-  title.className = `verdict-result ${data.correct ? "correct" : "wrong"}`;
+  const partial = Boolean(data.partial) && !data.correct;
+  let resultText = "指认不成立";
+  let resultClass = "wrong";
+  if (data.correct) {
+    resultText = "指认成立";
+    resultClass = "correct";
+  } else if (partial) {
+    resultText = "证据不足（部分吻合）";
+    resultClass = "partial";
+  }
+  title.textContent = resultText;
+  title.className = `verdict-result ${resultClass}`;
   $("#verdict-subtitle").textContent = `你指认了 ${role.name}`;
+
+  renderVerdictDimensions(data.dimensions, choice);
 
   const facts = Array.isArray(data.timeline) ? data.timeline : [];
   const missed = Array.isArray(data.missed_fact_ids)
@@ -1723,7 +2078,7 @@ function showVerdict(data, role) {
     );
     if (unfound) {
       item.appendChild(
-        element("p", "truth-text truth-locked", "未挖出")
+        element("p", "truth-text truth-locked", "你没能证明这一条")
       );
     } else {
       item.appendChild(element("p", "truth-text", text));
@@ -1794,6 +2149,9 @@ function resetUI() {
   state.socialToken += 1;
   socialMockCursor = 0;
   resetAccuseArm();
+  resetAccusePanel();
+  state.verdictOptions = null;
+  state.verdictOptionsLoaded = false;
   clearTimeout(arriveTimer);
   clearTimeout(recoilTimer);
   clearTimeout(lookTimer);
@@ -1848,6 +2206,8 @@ function resetUI() {
   speechText.classList.remove("typing");
   $("#verdict").classList.add("hidden");
   $("#verdict").setAttribute("aria-hidden", "true");
+  $("#verdict-dimensions").innerHTML = "";
+  $("#verdict-dimensions").classList.add("hidden");
   $("#truth-timeline").innerHTML = "";
   $("#missed-ids").innerHTML = "";
   $("#missed-summary").textContent = "";
@@ -1911,6 +2271,18 @@ function init() {
   $("#combine-followup").addEventListener("click", followupCombine);
   $("#confront-toggle").addEventListener("click", toggleConfrontMode);
   $("#restart-verdict").addEventListener("click", restartGame);
+  $("#accuse-cancel").addEventListener("click", () => closeAccusePanel());
+  $("#accuse-submit").addEventListener("click", submitAccuse);
+  document.addEventListener("keydown", (event) => {
+    if (
+      event.key === "Escape" &&
+      state.accusePanelOpen &&
+      !state.busy &&
+      !state.ended
+    ) {
+      closeAccusePanel();
+    }
+  });
   refreshControls();
   startGame();
 }

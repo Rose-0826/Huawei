@@ -162,6 +162,52 @@
 
   <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
 
+  <section id="accuse-panel" class="accuse-panel hidden" aria-hidden="true" role="dialog"
+           aria-modal="true" aria-labelledby="accuse-panel-title">
+    <div class="accuse-sheet">
+      <header class="accuse-head">
+        <p class="case-kicker">CLOSING STATEMENT</p>
+        <h2 id="accuse-panel-title" class="accuse-title">结案陈词</h2>
+        <p id="accuse-suspect" class="accuse-suspect"></p>
+        <p class="accuse-lede">谁、怎么下手、什么时候。三张卡按在桌上，缺一张都不算结案。</p>
+      </header>
+      <div id="accuse-cards" class="accuse-cards">
+        <div class="accuse-card" data-dim="motive">
+          <div class="accuse-card-head">
+            <span class="accuse-card-index">壹</span>
+            <span id="accuse-label-motive" class="accuse-card-title">动机</span>
+            <span class="accuse-card-state">未定</span>
+          </div>
+          <div id="accuse-options-motive" class="accuse-options" role="radiogroup"
+               aria-labelledby="accuse-label-motive"></div>
+        </div>
+        <div class="accuse-card" data-dim="method">
+          <div class="accuse-card-head">
+            <span class="accuse-card-index">贰</span>
+            <span id="accuse-label-method" class="accuse-card-title">手法</span>
+            <span class="accuse-card-state">未定</span>
+          </div>
+          <div id="accuse-options-method" class="accuse-options" role="radiogroup"
+               aria-labelledby="accuse-label-method"></div>
+        </div>
+        <div class="accuse-card" data-dim="time">
+          <div class="accuse-card-head">
+            <span class="accuse-card-index">叁</span>
+            <span id="accuse-label-time" class="accuse-card-title">时间</span>
+            <span class="accuse-card-state">未定</span>
+          </div>
+          <div id="accuse-options-time" class="accuse-options" role="radiogroup"
+               aria-labelledby="accuse-label-time"></div>
+        </div>
+      </div>
+      <p id="accuse-hint" class="accuse-hint" aria-live="polite">还差三格：动机、手法、时间。</p>
+      <footer class="accuse-actions">
+        <button id="accuse-cancel" class="ghost-button" type="button">回审讯</button>
+        <button id="accuse-submit" class="accuse-submit" type="button" disabled>提交指认</button>
+      </footer>
+    </div>
+  </section>
+
   <section id="verdict" class="verdict hidden" aria-hidden="true" role="dialog"
            aria-modal="true" aria-labelledby="verdict-title">
     <div class="verdict-frame">
@@ -170,6 +216,8 @@
         <h2 id="verdict-title" class="verdict-result">真相</h2>
         <p id="verdict-subtitle" class="verdict-subtitle"></p>
       </header>
+      <div id="verdict-dimensions" class="verdict-dimensions hidden"
+           aria-label="三项指认结果"></div>
       <div class="verdict-grid">
         <section class="truth-panel">
           <h3>真相时间线</h3>
