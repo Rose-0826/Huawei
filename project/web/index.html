@@ -30,6 +30,8 @@
         <p id="era" class="case-era">1937 年冬 · 暴雪封山</p>
       </div>
       <div class="header-actions">
+        <button id="log-button" class="ghost-button log-button" type="button"
+                aria-expanded="false" aria-controls="log-panel">记录</button>
         <button id="restart-button" class="ghost-button" type="button">重开</button>
         <button id="accuse-button" class="accuse-button" type="button" disabled>指认</button>
       </div>
@@ -231,10 +233,38 @@
         </section>
       </div>
       <footer class="verdict-actions">
+        <button id="verdict-log-button" class="ghost-button" type="button">查看本局记录</button>
         <button id="restart-verdict" class="ghost-button" type="button">重新开局</button>
       </footer>
     </div>
   </section>
+
+  <aside id="log-panel" class="log-panel hidden" aria-hidden="true" role="dialog"
+         aria-modal="false" aria-labelledby="log-title">
+    <div class="log-sheet">
+      <header class="log-head">
+        <p class="case-kicker">CASE NOTES · 审讯卷宗</p>
+        <div class="log-title-row">
+          <span class="log-seal" aria-hidden="true">卷</span>
+          <h2 id="log-title" class="log-title">对局记录</h2>
+          <span id="log-count" class="log-count">空卷</span>
+        </div>
+        <p class="log-lede">这一晚说过的话、递出的物证、对上的口径，都按次序记在下面。</p>
+        <div class="log-head-actions">
+          <button id="log-export" class="log-export" type="button" disabled>导出 JSON</button>
+          <button id="log-close" class="log-close" type="button" aria-label="收卷并关闭记录">收卷</button>
+        </div>
+      </header>
+      <div id="log-scroll" class="log-scroll">
+        <p id="log-empty" class="log-empty">本局还没有记录</p>
+        <ol id="log-list" class="log-list"></ol>
+      </div>
+      <footer class="log-foot">
+        <span>MISTVALE INN · 记事簿</span>
+        <span id="log-game-id" class="log-game-id"></span>
+      </footer>
+    </div>
+  </aside>
 
   <noscript>这款游戏需要启用 JavaScript。</noscript>
 </body>

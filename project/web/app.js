@@ -29,6 +29,13 @@ const state = {
   socialEvent: null,
   socialToken: 0,
   socialResolving: false,
+  logPanelOpen: false,
+  logEntries: [],
+  logLoaded: false,
+  logLoading: false,
+  logGameId: null,
+  logError: false,
+  logReturnFocus: null,
 };
 
 let speechToken = 0;
@@ -148,6 +155,89 @@ const VERDICT_DIMENSION_LABELS = {
   method: "手法",
   time: "时间",
 };
+
+const LOG_UI = /(?:^|[?&])logui=1(?:&|$)/.test(window.location.search);
+const LOG_TYPE_LABELS = {
+  start: "开场",
+  ask: "提问",
+  present: "出示",
+  confront: "对质",
+  combine: "对撞",
+  event: "事件",
+  accuse: "指认",
+};
+const LOG_MOCK_ENTRIES = [
+  {
+    seq: 1,
+    type: "start",
+    title: "雾镇旅馆",
+    text: "1937 年冬，暴雪封山。五个人围着旅馆的炉火，谁都不肯先开口。",
+  },
+  {
+    seq: 2,
+    type: "ask",
+    npc_name: "沈玉兰",
+    question: "昨晚十一点前后，你在哪儿？",
+    reply: "我在厨房清点碗碟。楼梯口的灯坏了，我什么也没看见。",
+    pressure: 0.1,
+    unlocked_clue: { id: "c02", name: "楼梯口的相遇" },
+  },
+  {
+    seq: 3,
+    type: "present",
+    npc_name: "沈玉兰",
+    clue_name: "楼梯口的相遇",
+    reply: "这张纸……你从哪里捡到的？我说的不是那个意思。",
+    pressure: 0.35,
+    unlocked_clue: null,
+  },
+  {
+    seq: 4,
+    type: "confront",
+    npc_names: ["沈玉兰", "周砚青"],
+    question: "十一点零五分，你们谁在楼梯口？",
+    alignment: "conflicting",
+    replies: [
+      { name: "沈玉兰", reply: "我一整晚都在厨房。" },
+      {
+        name: "周砚青",
+        reply: "我看见她站在楼梯口，手里攥着一块手帕。",
+      },
+    ],
+    pressure: { r1: 0.1, r2: 0.05 },
+    unlocked_clues: [{ id: "c05", name: "厨房的碗碟" }],
+  },
+  {
+    seq: 5,
+    type: "combine",
+    clue_names: ["楼梯口的相遇", "银元收条"],
+    title: "封口动机",
+    text: "两件物证指向同一个人与同一笔钱：有人用银元买下了楼梯口那一晚的沉默。",
+    pressure: { r5: 0.1 },
+  },
+  {
+    seq: 6,
+    type: "event",
+    kind: "demand",
+    speaker_name: "沈玉兰",
+    line: "您手里那张 23:05 的记录，是从楼梯口得来的？您先说清楚，我才敢说银元的事。",
+    choice: "press",
+    reply: "您要这么逼我，那我今晚就更没什么好说的了。",
+    pressure: { r1: 0.1 },
+  },
+  {
+    seq: 7,
+    type: "accuse",
+    suspect_name: "沈玉兰",
+    correct: false,
+    partial: true,
+    dimensions: [
+      { id: "motive", label: "动机", choice_label: "掩盖旧案", correct: true },
+      { id: "method", label: "手法", choice_label: "火钳", correct: false },
+      { id: "time", label: "时间", choice_label: "22:50", correct: true },
+    ],
+  },
+];
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -1028,6 +1118,7 @@ async function respondSocialEvent(choice) {
   if (data && data.unlocked_clue) {
     mergeClue(data.unlocked_clue);
   }
+  refreshLogIfOpen();
   showSocialResolution(
     data && data.reply,
     lines,
@@ -1457,6 +1548,7 @@ async function handleCombine() {
     await flyCombineToTable(first, second);
     showCombineCard(data, pressureLines);
     refreshControls();
+    refreshLogIfOpen();
     void checkSocialEvent();
   } catch (error) {
     const notReady = error.status === 404 || error.status === 405;
@@ -1552,6 +1644,7 @@ async function handleConfront(event) {
     }
     applyConfrontPressure(data.pressure || {});
     renderConfront(data, question);
+    refreshLogIfOpen();
     void checkSocialEvent();
   } catch (error) {
     toast(error.detail || "两人没有对上话", "warn");
@@ -1604,6 +1697,7 @@ async function handleAsk(event) {
     if (data.unlocked_clue) {
       mergeClue(data.unlocked_clue);
     }
+    refreshLogIfOpen();
     await speak(data.reply);
     void checkSocialEvent();
   } catch (error) {
@@ -1655,6 +1749,7 @@ async function handlePresent() {
     if (data.unlocked_clue) {
       mergeClue(data.unlocked_clue);
     }
+    refreshLogIfOpen();
     if (token === presentToken) {
       flyClue(clue, () => {
         if (token === presentToken) {
@@ -1978,6 +2073,7 @@ async function submitAccuse() {
     hideCombineCard();
     closeAccusePanel(false);
     showVerdict(data, role, choice);
+    refreshLogIfOpen();
   } catch (error) {
     toast(error.detail || "指认失败", "warn");
   } finally {
@@ -2125,9 +2221,418 @@ async function revealTimeline(items) {
   }
 }
 
+let logToken = 0;
+
+function logPressureText(pressure) {
+  const format = (value) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "";
+    }
+    return `压力 ${number.toFixed(2)}`;
+  };
+  if (typeof pressure === "number") {
+    return format(pressure);
+  }
+  if (!pressure || typeof pressure !== "object") {
+    return "";
+  }
+  const parts = [];
+  for (const [key, value] of Object.entries(pressure)) {
+    const text = format(value);
+    if (!text) {
+      continue;
+    }
+    const role = state.roles.find(
+      (item) => item.id === key || item.name === key
+    );
+    parts.push(role ? `${role.name} ${text}` : `${String(key).toUpperCase()} ${text}`);
+  }
+  return parts.join(" · ");
+}
+
+function renderLogMeta(items) {
+  const valid = items.filter((item) => item && item.text);
+  if (valid.length === 0) {
+    return null;
+  }
+  const meta = element("div", "log-meta");
+  valid.forEach((item) => {
+    const node = element("span", "log-meta-item", item.text);
+    if (item.tone) {
+      node.classList.add(item.tone);
+    }
+    meta.appendChild(node);
+  });
+  return meta;
+}
+
+function renderLogReplies(replies) {
+  if (!Array.isArray(replies) || replies.length === 0) {
+    return null;
+  }
+  const list = element("ul", "log-replies");
+  replies.forEach((reply) => {
+    const row = element("p", "log-reply");
+    if (reply && reply.name) {
+      row.appendChild(element("span", "log-reply-name", `${reply.name}：`));
+    }
+    row.appendChild(element("span", "log-reply-text", String(reply?.reply ?? "")));
+    const item = document.createElement("li");
+    item.appendChild(row);
+    list.appendChild(item);
+  });
+  return list;
+}
+
+function renderLogDimension(dim, index) {
+  const id = String(dim.id || dim.key || "");
+  const label = dim.label || VERDICT_DIMENSION_LABELS[id] || id || `第${index + 1}项`;
+  let value = dim.choice_label;
+  if (value === undefined || value === null) {
+    value = dim.choice ?? dim.value;
+  }
+  const text =
+    value === undefined || value === null || value === ""
+      ? "未选"
+      : dim.choice_label !== undefined && dim.choice_label !== null
+        ? String(dim.choice_label)
+        : dimensionChoiceLabel(id || label, value);
+  const ok = Boolean(dim.correct);
+  const row = element("p", `log-dim ${ok ? "ok" : "bad"}`);
+  row.appendChild(element("span", "log-dim-label", `${label}：`));
+  row.appendChild(element("span", "log-dim-choice", text));
+  row.appendChild(element("span", "log-dim-mark", ok ? "✓" : "✗"));
+  return row;
+}
+
+function renderLogEntry(entry) {
+  const type = String(entry.type || "");
+  const item = element("li", "log-entry");
+  item.dataset.type = type || "other";
+
+  const head = element("div", "log-entry-head");
+  head.appendChild(element("span", "log-type", LOG_TYPE_LABELS[type] || "记录"));
+  const seq = Number(entry.seq);
+  if (Number.isFinite(seq)) {
+    head.appendChild(
+      element("span", "log-seq", `NO. ${String(seq).padStart(2, "0")}`)
+    );
+  }
+
+  let who = "";
+  if (type === "ask" || type === "present") {
+    who = String(entry.npc_name || "");
+  } else if (type === "confront") {
+    who = Array.isArray(entry.npc_names)
+      ? entry.npc_names.filter(Boolean).join("、")
+      : "";
+  } else if (type === "event") {
+    who = String(entry.speaker_name || "");
+  } else if (type === "accuse") {
+    who = String(entry.suspect_name || "");
+  } else if (type === "start") {
+    who = String(entry.title || "雾镇旅馆");
+  } else if (type === "combine") {
+    who = "物证对撞";
+  }
+  if (who) {
+    head.appendChild(element("span", "log-who", who));
+  }
+  item.appendChild(head);
+
+  const appendText = (className, text) => {
+    const value = String(text ?? "").trim();
+    if (!value) {
+      return;
+    }
+    item.appendChild(element("p", className, value));
+  };
+
+  const metaItems = [];
+
+  if (type === "start") {
+    const intro = entry.text || entry.opening || entry.summary;
+    appendText("log-text", intro || "本场审讯开始。");
+  } else if (type === "ask") {
+    if (entry.question) {
+      appendText("log-question", `「${String(entry.question).trim()}」`);
+    }
+    appendText("log-reply", entry.reply);
+  } else if (type === "present") {
+    if (entry.clue_name) {
+      appendText("log-question", `出示物证：${entry.clue_name}`);
+    }
+    appendText("log-reply", entry.reply);
+  } else if (type === "confront") {
+    if (entry.question) {
+      appendText("log-question", `「${String(entry.question).trim()}」`);
+    }
+    const replies = renderLogReplies(entry.replies);
+    if (replies) {
+      item.appendChild(replies);
+    }
+    const alignment = String(entry.alignment || "unclear");
+    const verdict = element(
+      "p",
+      "log-verdict",
+      `结论：${CONFRONT_VERDICTS[alignment] || "两人都没把话说实"}`
+    );
+    if (alignment === "aligned") {
+      verdict.classList.add("ok");
+    } else if (alignment === "conflicting") {
+      verdict.classList.add("bad");
+    }
+    item.appendChild(verdict);
+    const clues = Array.isArray(entry.unlocked_clues)
+      ? entry.unlocked_clues.filter((clue) => clue && clue.name)
+      : [];
+    if (clues.length) {
+      metaItems.push({
+        text: `新线索 · ${clues.map((clue) => clue.name).join("、")}`,
+        tone: "clue",
+      });
+    }
+  } else if (type === "combine") {
+    if (entry.title) {
+      appendText("log-question", String(entry.title));
+    }
+    appendText("log-text", entry.text);
+    if (Array.isArray(entry.clue_names) && entry.clue_names.length) {
+      metaItems.push({
+        text: `物证 · ${entry.clue_names.filter(Boolean).join(" × ")}`,
+      });
+    }
+  } else if (type === "event") {
+    const kind = String(entry.kind || "");
+    if (SOCIAL_KIND_LABELS[kind]) {
+      metaItems.push({ text: SOCIAL_KIND_LABELS[kind] });
+    }
+    appendText("log-text", entry.line);
+    if (entry.choice) {
+      appendText(
+        "log-choice",
+        `你的选择：${SOCIAL_CHOICE_LABELS[entry.choice] || entry.choice}`
+      );
+    }
+    appendText("log-reply", entry.reply);
+  } else if (type === "accuse") {
+    let verdictText = "指认不成立";
+    let tone = "bad";
+    if (entry.correct) {
+      verdictText = "指认成立";
+      tone = "ok";
+    } else if (entry.partial) {
+      verdictText = "证据不足（部分吻合）";
+      tone = "partial";
+    }
+    item.appendChild(
+      element("p", `log-verdict ${tone}`, `结论：${verdictText}`)
+    );
+    const dimensions = Array.isArray(entry.dimensions) ? entry.dimensions : [];
+    dimensions.forEach((dim, index) => {
+      if (dim && typeof dim === "object") {
+        item.appendChild(renderLogDimension(dim, index));
+      }
+    });
+  } else {
+    appendText("log-text", entry.text || entry.reply);
+  }
+
+  const pressureText = logPressureText(entry.pressure);
+  if (pressureText) {
+    metaItems.push({ text: pressureText, tone: "pressure" });
+  }
+  if (entry.unlocked_clue && entry.unlocked_clue.name) {
+    metaItems.push({
+      text: `新线索 · ${entry.unlocked_clue.name}`,
+      tone: "clue",
+    });
+  }
+  const meta = renderLogMeta(metaItems);
+  if (meta) {
+    item.appendChild(meta);
+  }
+
+  return item;
+}
+
+function renderLog() {
+  const list = $("#log-list");
+  if (!list) {
+    return;
+  }
+  const entries = (Array.isArray(state.logEntries) ? state.logEntries : [])
+    .map((entry, index) => ({ entry, index }))
+    .filter((item) => item.entry && typeof item.entry === "object")
+    .sort((a, b) => {
+      const left = Number(a.entry.seq);
+      const right = Number(b.entry.seq);
+      if (Number.isFinite(left) && Number.isFinite(right) && left !== right) {
+        return left - right;
+      }
+      return a.index - b.index;
+    });
+
+  list.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  entries.forEach(({ entry }) => {
+    fragment.appendChild(renderLogEntry(entry));
+  });
+  list.appendChild(fragment);
+
+  $("#log-count").textContent = entries.length ? `${entries.length} 条` : "空卷";
+  $("#log-export").disabled = entries.length === 0;
+
+  const empty = $("#log-empty");
+  empty.textContent = state.logLoading ? "正在翻卷宗…" : "本局还没有记录";
+  empty.classList.toggle("hidden", entries.length > 0);
+
+  const gameId = state.logGameId || state.gameId;
+  const label = $("#log-game-id");
+  label.textContent = gameId
+    ? `NO. ${gameId}`
+    : LOG_UI && entries.length
+      ? "NO. MOCK-LOG"
+      : "";
+}
+
+async function loadLog() {
+  if (!state.logPanelOpen) {
+    state.logLoaded = false;
+    return;
+  }
+  const gameId = state.gameId;
+  const token = ++logToken;
+  if (!gameId && !LOG_UI) {
+    state.logLoading = false;
+    state.logLoaded = true;
+    state.logEntries = [];
+    state.logGameId = null;
+    renderLog();
+    return;
+  }
+  state.logLoading = true;
+  renderLog();
+
+  let payload = null;
+  if (LOG_UI) {
+    await sleep(140);
+    payload = { game_id: gameId || "mock-log", entries: LOG_MOCK_ENTRIES };
+  } else {
+    try {
+      payload = await api(`/games/${gameId}/log`);
+    } catch (error) {
+      payload = null;
+    }
+  }
+
+  if (token !== logToken || !state.logPanelOpen) {
+    return;
+  }
+  state.logLoading = false;
+  state.logLoaded = true;
+  state.logError = payload === null;
+  state.logGameId =
+    payload && payload.game_id ? String(payload.game_id) : gameId;
+  state.logEntries =
+    payload && Array.isArray(payload.entries) ? payload.entries : [];
+  renderLog();
+}
+
+function refreshLogIfOpen() {
+  if (state.logPanelOpen) {
+    void loadLog();
+    return;
+  }
+  state.logLoaded = false;
+}
+
+function openLogPanel(trigger) {
+  if (state.logPanelOpen) {
+    return;
+  }
+  state.logPanelOpen = true;
+  state.logReturnFocus =
+    trigger || document.querySelector("#log-button") || null;
+  const panel = $("#log-panel");
+  panel.classList.remove("hidden");
+  panel.setAttribute("aria-hidden", "false");
+  $("#log-button").setAttribute("aria-expanded", "true");
+  document.body.classList.add("log-open");
+  if (!state.logLoaded) {
+    state.logLoading = true;
+  }
+  renderLog();
+  void loadLog();
+  $("#log-close").focus();
+}
+
+function closeLogPanel(restoreFocus = true) {
+  if (!state.logPanelOpen) {
+    return;
+  }
+  state.logPanelOpen = false;
+  const panel = $("#log-panel");
+  panel.classList.add("hidden");
+  panel.setAttribute("aria-hidden", "true");
+  $("#log-button").setAttribute("aria-expanded", "false");
+  document.body.classList.remove("log-open");
+  const target = state.logReturnFocus;
+  state.logReturnFocus = null;
+  if (restoreFocus) {
+    if (target && document.contains(target) && typeof target.focus === "function") {
+      target.focus();
+    } else {
+      $("#log-button").focus();
+    }
+  }
+}
+
+function toggleLogPanel(trigger) {
+  if (state.logPanelOpen) {
+    closeLogPanel();
+  } else {
+    openLogPanel(trigger);
+  }
+}
+
+function exportLog() {
+  const entries = Array.isArray(state.logEntries) ? state.logEntries : [];
+  if (entries.length === 0) {
+    return;
+  }
+  const gameId = state.logGameId || state.gameId || "unknown";
+  const payload = { game_id: gameId, entries };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `mistvale-log-${gameId}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  toast("记录已导出", "good", 2200);
+}
+
+function resetLogPanel() {
+  closeLogPanel(false);
+  state.logEntries = [];
+  state.logLoaded = false;
+  state.logLoading = false;
+  state.logGameId = null;
+  state.logError = false;
+  logToken += 1;
+  renderLog();
+}
+
 function resetUI() {
   speechToken += 1;
   presentToken += 1;
+  resetLogPanel();
   state.gameId = null;
   state.roles = [];
   state.clues = [];
@@ -2238,6 +2743,9 @@ async function startGame() {
       syncCombineState();
     }
     speak(data.opening, { narration: true });
+    if (LOG_UI) {
+      openLogPanel();
+    }
     if (SOCIAL_PREVIEW_KIND) {
       const preview = SOCIAL_MOCK_EVENTS.find(
         (item) => item.kind === SOCIAL_PREVIEW_KIND
@@ -2273,7 +2781,19 @@ function init() {
   $("#restart-verdict").addEventListener("click", restartGame);
   $("#accuse-cancel").addEventListener("click", () => closeAccusePanel());
   $("#accuse-submit").addEventListener("click", submitAccuse);
+  $("#log-button").addEventListener("click", () =>
+    toggleLogPanel($("#log-button"))
+  );
+  $("#log-close").addEventListener("click", () => closeLogPanel());
+  $("#log-export").addEventListener("click", exportLog);
+  $("#verdict-log-button").addEventListener("click", () =>
+    openLogPanel($("#verdict-log-button"))
+  );
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.logPanelOpen) {
+      closeLogPanel();
+      return;
+    }
     if (
       event.key === "Escape" &&
       state.accusePanelOpen &&
