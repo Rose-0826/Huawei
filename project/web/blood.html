@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>雾镇旅馆 · 雪夜 · 电子血染</title>
+  <link rel="stylesheet" href="./blood.css">
+  <script src="./blood.js" defer></script>
+</head>
+<body class="blood">
+  <div class="scene">
+    <div class="hall-bg" aria-hidden="true">
+      <div class="wall-panel"></div>
+      <div class="window">
+        <div class="window-pane"></div>
+        <div class="snow"></div>
+        <div class="window-cross"></div>
+      </div>
+      <div class="lamp">
+        <div class="lamp-cord"></div>
+        <div class="lamp-shade"></div>
+        <div class="lamp-bulb"></div>
+      </div>
+      <div class="floor"></div>
+      <div class="hall-vignette"></div>
+    </div>
+
+    <header class="blood-header">
+      <div class="blood-heading">
+        <p class="kicker">MISTVALE INN · BLOOD ON THE SNOW</p>
+        <h1>雾镇旅馆 <span>· 雪夜</span></h1>
+        <p class="era">1937 年冬 · 暴雪封山 · 圆桌议事</p>
+      </div>
+      <div class="blood-status">
+        <div class="status-chips">
+          <span class="chip chip-day">第 <b id="day-value">1</b> 天</span>
+          <span id="phase-value" class="chip chip-phase" data-phase="discussion">白天讨论</span>
+        </div>
+        <div id="identity-card" class="identity-card" data-role="villager">
+          <span class="identity-label">你的身份</span>
+          <span id="identity-role" class="identity-role">村民</span>
+          <span id="identity-detail" class="identity-detail">你手上没有刀。</span>
+        </div>
+      </div>
+      <div class="blood-actions">
+        <button id="log-button" class="ghost-button" type="button"
+                aria-controls="log-drawer" aria-expanded="false">记录</button>
+        <button id="restart-button" class="ghost-button" type="button">重开</button>
+      </div>
+    </header>
+
+    <main class="blood-main">
+      <section class="hall" aria-label="旅馆大厅圆桌">
+        <div class="hall-bar">
+          <p id="hall-hint" class="hall-hint" aria-live="polite">雪落在大厅的窗上，六个人围桌坐下。</p>
+          <p class="hall-rule">六人围桌 · 一人说谎</p>
+        </div>
+        <div id="table-stage" class="table-stage">
+          <div class="table-surface" aria-hidden="true">
+            <div class="table-grain"></div>
+          </div>
+          <div class="table-center" aria-hidden="true">
+            <span class="candle"></span>
+            <span class="table-seal">雪夜议事</span>
+            <span id="table-day" class="table-day">第 1 夜</span>
+          </div>
+          <div id="seats" class="seats"></div>
+          <div id="speech-bubble" class="speech-bubble hidden" role="status"
+               aria-live="polite"></div>
+        </div>
+      </section>
+
+      <aside class="discussion" aria-label="公开讨论流">
+        <header class="discussion-head">
+          <div>
+            <p class="kicker">PUBLIC TALK</p>
+            <h2>公开讨论</h2>
+          </div>
+          <span id="discussion-count" class="discussion-count">0 条</span>
+        </header>
+        <div id="vote-board" class="vote-board hidden" aria-live="polite"></div>
+        <div id="discussion-scroll" class="discussion-scroll">
+          <p id="discussion-empty" class="discussion-empty">大厅里还没人开口。</p>
+          <ol id="discussion-list" class="discussion-list" aria-live="polite"></ol>
+        </div>
+      </aside>
+    </main>
+
+    <footer id="action-bar" class="action-bar">
+      <div class="action-hint-wrap">
+        <p id="phase-hint" class="phase-hint" aria-live="polite">正在推开旅馆的门……</p>
+        <p id="hall-report" class="hall-report hidden" aria-live="polite"></p>
+      </div>
+      <div class="action-controls">
+        <form id="speak-form" class="speak-form" autocomplete="off">
+          <input id="speak-input" type="text" maxlength="200"
+                 placeholder="对圆桌上的人说点什么" aria-label="你的发言">
+          <button id="speak-button" class="primary-button" type="submit" disabled>发言</button>
+        </form>
+        <div class="action-side">
+          <button id="secondary-button" class="ghost-button" type="button">结束讨论，提名</button>
+          <button id="primary-button" class="primary-button hidden" type="button">投票</button>
+        </div>
+      </div>
+      <div id="confirm-strip" class="confirm-strip hidden" role="alertdialog" aria-live="assertive">
+        <span id="confirm-text"></span>
+        <button id="confirm-yes" class="primary-button" type="button">确认</button>
+        <button id="confirm-no" class="ghost-button" type="button">取消</button>
+      </div>
+    </footer>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <section id="end-overlay" class="end-overlay hidden" role="dialog" aria-modal="true"
+           aria-labelledby="end-title" aria-hidden="true">
+    <div id="end-frame" class="end-frame" data-result="villagers">
+      <p id="end-kicker" class="kicker">DAWN · 结局</p>
+      <h2 id="end-title">好人胜</h2>
+      <p id="end-subtitle" class="end-subtitle">雪停了。</p>
+      <dl class="end-facts">
+        <div>
+          <dt>凶手</dt>
+          <dd id="end-murderer">尚未揭晓</dd>
+        </div>
+        <div>
+          <dt>你的身份</dt>
+          <dd id="end-you">村民</dd>
+        </div>
+        <div>
+          <dt>撑过</dt>
+          <dd id="end-days">1 天</dd>
+        </div>
+      </dl>
+      <p id="end-message" class="end-message">凶手、死者，以及每一个没说出口的谎，都留在这一夜。</p>
+      <div class="end-actions">
+        <button id="end-log" class="ghost-button" type="button">查看本局记录</button>
+        <button id="end-restart" class="ghost-button" type="button">再来一局</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="gate" class="gate hidden" role="dialog" aria-modal="true"
+           aria-labelledby="gate-title" aria-hidden="true">
+    <div class="gate-frame">
+      <p class="kicker">CONNECTION LOST</p>
+      <h2 id="gate-title">大厅的门还锁着</h2>
+      <p id="gate-text" class="gate-text">无法连接 /blood 接口。</p>
+      <div class="gate-actions">
+        <button id="gate-retry" class="primary-button" type="button">重试</button>
+        <button id="gate-mock" class="ghost-button" type="button">以演示模式进入</button>
+      </div>
+    </div>
+  </section>
+
+  <aside id="log-drawer" class="log-drawer hidden" aria-hidden="true" role="dialog"
+         aria-modal="false" aria-labelledby="log-drawer-title">
+    <div class="log-sheet">
+      <header class="log-head">
+        <p class="kicker">CASE NOTES · 圆桌卷宗</p>
+        <div class="log-title-row">
+          <span class="log-seal" aria-hidden="true">卷</span>
+          <h2 id="log-drawer-title">本局记录</h2>
+          <span id="log-drawer-count" class="log-count">0 条</span>
+        </div>
+        <p class="log-lede">桌上的每一句话、每一次投票、每一个死讯，都按次序收在这一卷里。</p>
+        <button id="log-drawer-close" class="log-close" type="button"
+                aria-label="收卷并关闭记录">收卷</button>
+      </header>
+      <div id="log-drawer-scroll" class="log-drawer-scroll">
+        <p id="log-drawer-empty" class="discussion-empty">本局还没有记录。</p>
+        <ol id="log-drawer-list" class="log-drawer-list"></ol>
+      </div>
+      <footer class="log-foot">
+        <span>MISTVALE INN · 记事簿</span>
+        <span id="log-drawer-game" class="log-game-id"></span>
+      </footer>
+    </div>
+  </aside>
+
+  <noscript>这款游戏需要启用 JavaScript。</noscript>
+</body>
+</html>
