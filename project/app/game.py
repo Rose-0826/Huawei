@@ -54,6 +54,7 @@ class GameState:
     social_count: int = 0
     pending_event: SocialEvent | None = None
     social_history: list[SocialEvent] = field(default_factory=list)
+    log: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -201,6 +202,7 @@ class GameStore:
         """创建一局并返回初始状态。"""
         game_id = str(uuid.uuid4())
         state = GameState(game_id=game_id, script=script)
+        _log(state, {"type": "start", "opening": script.opening})
         self._games[game_id] = state
         return state
 
@@ -232,17 +234,27 @@ def ask(
         return _ask_error("question_too_long")
     if state.last_questions.get(npc_id) == text:
         _after_action(state, npc_id)
+        pressure = state.pressure.get(npc_id, 0.0)
+        _log_ask(state, role, text, REPEATED_QUESTION_REPLY, pressure, None)
         return AskOutcome(
             ok=True,
             error=None,
             reply=REPEATED_QUESTION_REPLY,
-            pressure=state.pressure.get(npc_id, 0.0),
+            pressure=pressure,
             unlocked_clue=None,
             action=None,
         )
     outcome = _answer(state, role, text, llm)
     if outcome.ok:
         _after_action(state, npc_id)
+        _log_ask(
+            state,
+            role,
+            text,
+            outcome.reply or "",
+            outcome.pressure,
+            outcome.unlocked_clue,
+        )
     return outcome
 
 
@@ -296,6 +308,19 @@ def present_clue(
     )
     if outcome.ok:
         _after_action(state, npc_id)
+        _log(
+            state,
+            {
+                "type": "present",
+                "npc_id": role.id,
+                "npc_name": role.name,
+                "clue_id": clue.id,
+                "clue_name": clue.name,
+                "reply": outcome.reply or "",
+                "pressure": outcome.pressure,
+                "unlocked_clue": _clue_ref(outcome.unlocked_clue),
+            },
+        )
     return outcome
 
 
@@ -356,6 +381,22 @@ def combine(
                 line=reaction_line(target.name),
             )
     _after_action(state, target_npc_id)
+    _log(
+        state,
+        {
+            "type": "combine",
+            "clue_ids": [first_id, second_id],
+            "clue_names": [clues[first_id].name, clues[second_id].name],
+            "title": rule.title,
+            "text": rule.text,
+            "pressure": dict(pressure),
+            "reaction": (
+                {"name": reaction.name, "line": reaction.line}
+                if reaction is not None
+                else None
+            ),
+        },
+    )
     return CombineOutcome(
         ok=True,
         error=None,
@@ -433,16 +474,35 @@ def confront(
         if outcome.unlocked_clue is not None
     )
     _after_action(state, right.id)
+    pressure = {
+        role.id: state.pressure.get(role.id, 0.0)
+        for role in (left, right)
+    }
+    _log(
+        state,
+        {
+            "type": "confront",
+            "npc_ids": [left.id, right.id],
+            "npc_names": [left.name, right.name],
+            "question": text,
+            "alignment": alignment,
+            "replies": [
+                {"name": reply.name, "reply": reply.reply}
+                for reply in replies
+            ],
+            "pressure": dict(pressure),
+            "unlocked_clues": [
+                _clue_ref(clue) for clue in unlocked
+            ],
+        },
+    )
     return ConfrontOutcome(
         ok=True,
         error=None,
         replies=replies,
         alignment=alignment,
         unlocked_clues=unlocked,
-        pressure={
-            role.id: state.pressure.get(role.id, 0.0)
-            for role in (left, right)
-        },
+        pressure=pressure,
     )
 
 
@@ -499,6 +559,19 @@ def resolve_event_choice(
     updated = min(MAX_PRESSURE, max(0.0, current + delta))
     state.pressure[event.speaker_id] = updated
     state.pending_event = None
+    _log(
+        state,
+        {
+            "type": "event",
+            "kind": event.kind,
+            "speaker_name": event.speaker_name,
+            "target_name": event.target_name,
+            "line": event.line,
+            "choice": choice,
+            "reply": reply,
+            "pressure": {event.speaker_id: updated},
+        },
+    )
     return EventChoiceOutcome(
         ok=True,
         error=None,
@@ -571,7 +644,39 @@ def accuse(
     )
     state.ended = True
     state.accusation = outcome
+    suspect = _role_index(state.script)[suspect_id]
+    _log(
+        state,
+        {
+            "type": "accuse",
+            "suspect_id": suspect.id,
+            "suspect_name": suspect.name,
+            "correct": correct,
+            "partial": partial,
+            "dimensions": [
+                {
+                    "id": dimension.id,
+                    "label": dimension.label,
+                    "choice": dimension.choice,
+                    "correct": dimension.correct,
+                }
+                for dimension in dimensions
+            ],
+            "missed_fact_ids": list(missed),
+        },
+    )
     return outcome
+
+
+def get_log(
+    store: GameStore,
+    game_id: str,
+) -> list[dict[str, object]] | None:
+    """返回本局的玩家可见日志，局不存在时返回空。"""
+    state = store.get(game_id)
+    if state is None:
+        return None
+    return [dict(entry) for entry in state.log]
 
 
 def build_view(state: GameState) -> GameView:
@@ -688,6 +793,43 @@ def _answer(
         action=decision.action,
         decision=decision,
     )
+
+
+def _log(state: GameState, entry: dict[str, object]) -> None:
+    """向本局日志追加一条带自增序号、只含玩家可见信息的记录。"""
+    record: dict[str, object] = {"seq": len(state.log) + 1}
+    record.update(entry)
+    state.log.append(record)
+
+
+def _log_ask(
+    state: GameState,
+    role: Role,
+    question: str,
+    reply: str,
+    pressure: float,
+    unlocked_clue: Clue | None,
+) -> None:
+    """追加一条提问日志，只记录问题、台词与公开线索。"""
+    _log(
+        state,
+        {
+            "type": "ask",
+            "npc_id": role.id,
+            "npc_name": role.name,
+            "question": question,
+            "reply": reply,
+            "pressure": pressure,
+            "unlocked_clue": _clue_ref(unlocked_clue),
+        },
+    )
+
+
+def _clue_ref(clue: Clue | None) -> dict[str, str] | None:
+    """把线索收敛成玩家可见的 id 与名称。"""
+    if clue is None:
+        return None
+    return {"id": clue.id, "name": clue.name}
 
 
 def _ask_error(error: str) -> AskOutcome:

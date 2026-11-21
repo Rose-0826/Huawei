@@ -23,6 +23,7 @@ from app.game import (
     combine,
     confront,
     get_event,
+    get_log,
     get_view,
     present_clue,
     resolve_event_choice,
@@ -238,6 +239,13 @@ class EventChoiceResponse(APIModel):
     event: EventPublic | None = None
 
 
+class LogResponse(APIModel):
+    """本局玩家可见日志，条目类型由 type 字段区分。"""
+
+    game_id: str
+    entries: list[dict[str, object]]
+
+
 GAME_ERRORS: dict[str, tuple[int, str]] = {
     "game_not_found": (404, "找不到这一局"),
     "npc_not_found": (404, "找不到这个角色"),
@@ -412,6 +420,17 @@ def create_app(
             pressure=dict(outcome.pressure),
             event=None,
         )
+
+    @application.get(
+        "/games/{game_id}/log",
+        response_model=LogResponse,
+    )
+    def get_game_log(game_id: str) -> LogResponse:
+        """返回本局按操作顺序记录的玩家可见日志。"""
+        entries = get_log(game_store, game_id)
+        if entries is None:
+            _raise_error("game_not_found")
+        return LogResponse(game_id=game_id, entries=entries)
 
     @application.get(
         "/games/{game_id}",
