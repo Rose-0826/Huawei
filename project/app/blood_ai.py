@@ -5,7 +5,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from app.config import BLOOD_MAX_LINE_CHARS, BLOOD_PROMPT_CONTEXT_LINES
+from app.config import (
+    BLOOD_MAX_LINE_CHARS,
+    BLOOD_PROMPT_CONTEXT_LINES,
+    BLOOD_VOTE_REASON_MAX_CHARS,
+)
 from app.llm import LLMClient, LLMUnavailable, get_llm
 
 if TYPE_CHECKING:
@@ -22,7 +26,8 @@ SYSTEM_PROMPT: str = (
     "2. 可以怀疑、辩解、试探，但绝不能说自己「是凶手」或「是好人」，"
     "也不要提到模型、AI 或提示词。\n"
     "3. 只能基于下面给出的公开身份与私下信息说话，不要编造新的凶案细节。\n"
-    "4. 语气要像这个年代的人，克制、简短。"
+    "4. 被点名或被提名时必须正面回答或反驳，不许只换个话题。\n"
+    "5. 语气要像这个年代的人，克制、简短。"
 )
 
 FALLBACK_LINES: dict[str, str] = {
@@ -76,6 +81,27 @@ def build_prompt(
     ]
     if names:
         lines.append("你现在最怀疑：" + "、".join(names))
+    hint = getattr(state, "pending_hint", "") or ""
+    if hint == "defense":
+        lines.append(
+            "你刚被当众提名，必须先正面自辩：说清你那晚在哪、做过什么，"
+            "不许只把话引开。"
+        )
+    elif hint == "accused":
+        lines.append("有人当面点了你的名，你必须正面回答或反驳，不许换话题。")
+    elif hint == "vote_reason":
+        target_name = _name_of(
+            state,
+            getattr(state, "pending_target_id", None),
+        )
+        lines.append(
+            f"现在投票，你要投 {target_name}。"
+            f"只输出一句不超过 {BLOOD_VOTE_REASON_MAX_CHARS} 字的理由，不要寒暄。"
+        )
+    pending = getattr(state, "pending_fact", {})
+    fact = pending.get(player.id) if pending else None
+    if fact:
+        lines.append("今天你可以当众说出的私密信息：" + fact)
     lines.append("现在轮到你开口，说一到两句，别重复寒暄。")
     return SYSTEM_PROMPT, "\n".join(lines)
 
@@ -105,8 +131,16 @@ def generate_line(
     return clean_line(raw)
 
 
-def fallback_line(state: BloodState, player: BloodPlayer) -> str:
-    """按角色模板生成一句兜底发言。"""
+def fallback_line(
+    state: BloodState,
+    player: BloodPlayer,
+    hint: str = "",
+) -> str:
+    """按角色模板生成一句兜底发言，被点名或自辩时给出正面回应。"""
+    if hint in {"defense", "accused"}:
+        from app.blood import DEFENSE_FALLBACK_DEFAULT, DEFENSE_FALLBACKS
+
+        return DEFENSE_FALLBACKS.get(player.id, DEFENSE_FALLBACK_DEFAULT)
     target_id = _top_target(state, player)
     name = _name_of(state, target_id)
     template = FALLBACK_LINES.get(player.id, DEFAULT_FALLBACK)
@@ -130,7 +164,8 @@ def make_reply_fn(llm: LLMClient | None = None) -> ReplyFn:
         text = ""
         if client is not None:
             text = generate_line(player, state, client)
-        return text or fallback_line(state, player)
+        hint = getattr(state, "pending_hint", "") or ""
+        return text or fallback_line(state, player, hint)
 
     return reply
 

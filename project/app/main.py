@@ -17,11 +17,16 @@ from app.blood import (
     BloodState,
     BloodStore,
     BloodView,
-    NominateOutcome,
+    DefenseOutcome,
     NightOutcome,
     TalkOutcome,
+    VoteOutcome,
 )
-from app.config import BLOOD_MAX_SPEAK_PER_DAY, MAX_QUESTION_CHARS
+from app.config import (
+    BLOOD_MAX_DEFENSE_SPEAK_PER_DAY,
+    BLOOD_MAX_SPEAK_PER_DAY,
+    MAX_QUESTION_CHARS,
+)
 from app.engine.social import SocialEvent
 from app.game import (
     AskOutcome,
@@ -294,17 +299,26 @@ class BloodLogEntryPublic(APIModel):
     text: str
 
 
+class BloodRevealPublic(APIModel):
+    """终局揭晓的凶手身份。"""
+
+    murderer_id: str
+    murderer_name: str
+
+
 class BloodStateResponse(APIModel):
     """阵营模式一局的公开状态。"""
 
     game_id: str
     day: int
-    phase: Literal["discussion", "night", "ended"]
+    phase: Literal["discussion", "defense", "night", "ended"]
     players: list[BloodPlayerPublic]
     you: BloodYouPublic
     public_log: list[BloodLogEntryPublic]
     dead: list[BloodDeadPublic]
     message: str
+    winner: Literal["good", "murderer"] | None = None
+    reveal: BloodRevealPublic | None = None
 
 
 class BloodReplyPublic(APIModel):
@@ -320,7 +334,7 @@ class BloodTalkResponse(APIModel):
 
     replies: list[BloodReplyPublic]
     public_log: list[BloodLogEntryPublic]
-    phase: Literal["discussion", "night", "ended"]
+    phase: Literal["discussion", "defense", "night", "ended"]
 
 
 class BloodSpeakRequest(APIModel):
@@ -335,25 +349,50 @@ class BloodNominateRequest(APIModel):
     target_id: str = Field(min_length=1)
 
 
+class BloodNomineePublic(APIModel):
+    """被提名者的公开信息。"""
+
+    id: str
+    name: str
+
+
+class BloodNominateResponse(APIModel):
+    """提名后进入自辩阶段。"""
+
+    phase: Literal["discussion", "defense", "night", "ended"]
+    target: BloodNomineePublic
+    defense: BloodReplyPublic
+    public_log: list[BloodLogEntryPublic]
+
+
+class BloodVoteRequest(APIModel):
+    """真人投票，可投提名目标之外的人。"""
+
+    target_id: str = Field(min_length=1)
+
+
 class BloodVotePublic(APIModel):
-    """一张选票。"""
+    """一张选票，agent 附带一句公开理由。"""
 
     voter_id: str
     voter_name: str
     target_id: str
     target_name: str
+    reason: str
 
 
-class BloodNominateResponse(APIModel):
+class BloodVoteResponse(APIModel):
     """投票与处决结算。"""
 
     votes: list[BloodVotePublic]
     tally: dict[str, int]
+    threshold: int
     executed: BloodDeadPublic | None
     winner: Literal["good", "murderer"] | None
+    reveal: BloodRevealPublic | None
     message: str
     public_log: list[BloodLogEntryPublic]
-    phase: Literal["discussion", "night", "ended"]
+    phase: Literal["discussion", "defense", "night", "ended"]
 
 
 class BloodNightRequest(APIModel):
@@ -367,8 +406,9 @@ class BloodNightResponse(APIModel):
 
     killed: BloodDeadPublic | None
     day: int
-    phase: Literal["discussion", "night", "ended"]
+    phase: Literal["discussion", "defense", "night", "ended"]
     winner: Literal["good", "murderer"] | None
+    reveal: BloodRevealPublic | None = None
     message: str
     public_log: list[BloodLogEntryPublic]
 
@@ -388,6 +428,10 @@ BLOOD_ERRORS: dict[str, tuple[int, str]] = {
     "you_are_dead": (409, "你已经出局，只能旁观"),
     "discuss_used": (409, "今天已经讨论过了"),
     "speak_limit": (409, f"今天最多回应 {BLOOD_MAX_SPEAK_PER_DAY} 次"),
+    "defense_speak_limit": (
+        409,
+        f"今天质证最多 {BLOOD_MAX_DEFENSE_SPEAK_PER_DAY} 次",
+    ),
     "nominate_used": (409, "今天已经提名过了"),
     "target_dead": (409, "这个人已经死了"),
     "target_invalid": (422, "不能选择这个目标"),
@@ -693,13 +737,39 @@ def create_app(
         game_id: str,
         request: BloodNominateRequest,
     ) -> BloodNominateResponse:
-        """发起提名并结算全场投票。"""
-        outcome = blood.nominate(blood_games, game_id, request.target_id)
+        """提名一名在场者，由被提名者先自辩，不立即处决。"""
+        outcome = blood.nominate(
+            blood_games,
+            game_id,
+            request.target_id,
+            blood_reply,
+        )
         _raise_blood_error(outcome.error)
         state = blood_games.get(game_id)
         if state is None:
             _raise_blood_error("game_not_found")
         return _blood_nominate_public(state, outcome)
+
+    @application.post(
+        "/blood/games/{game_id}/vote",
+        response_model=BloodVoteResponse,
+    )
+    def vote_blood_game(
+        game_id: str,
+        request: BloodVoteRequest,
+    ) -> BloodVoteResponse:
+        """全体投票，得票严格过半才处决。"""
+        outcome = blood.vote(
+            blood_games,
+            game_id,
+            request.target_id,
+            blood_reply,
+        )
+        _raise_blood_error(outcome.error)
+        state = blood_games.get(game_id)
+        if state is None:
+            _raise_blood_error("game_not_found")
+        return _blood_vote_public(state, outcome)
 
     @application.post(
         "/blood/games/{game_id}/night",
@@ -786,6 +856,8 @@ def _blood_state_public(view: BloodView) -> BloodStateResponse:
             for player in view.dead
         ],
         message=view.message,
+        winner=view.winner,
+        reveal=_blood_reveal_public(view.reveal),
     )
 
 
@@ -809,19 +881,42 @@ def _blood_talk_public(
 
 def _blood_nominate_public(
     state: BloodState,
-    outcome: NominateOutcome,
+    outcome: DefenseOutcome,
 ) -> BloodNominateResponse:
+    if outcome.target is None or outcome.defense is None:
+        raise HTTPException(status_code=500, detail="提名结算缺少自辩内容")
     return BloodNominateResponse(
+        phase=outcome.phase,
+        target=BloodNomineePublic(
+            id=outcome.target.id,
+            name=outcome.target.name,
+        ),
+        defense=BloodReplyPublic(
+            speaker_id=outcome.defense.speaker_id,
+            speaker_name=outcome.defense.speaker_name,
+            text=outcome.defense.text,
+        ),
+        public_log=_blood_log_public(state.public_log),
+    )
+
+
+def _blood_vote_public(
+    state: BloodState,
+    outcome: VoteOutcome,
+) -> BloodVoteResponse:
+    return BloodVoteResponse(
         votes=[
             BloodVotePublic(
                 voter_id=vote.voter_id,
                 voter_name=vote.voter_name,
                 target_id=vote.target_id,
                 target_name=vote.target_name,
+                reason=vote.reason,
             )
             for vote in outcome.votes
         ],
         tally=dict(outcome.tally),
+        threshold=outcome.threshold,
         executed=(
             BloodDeadPublic(
                 id=outcome.executed.id,
@@ -831,9 +926,21 @@ def _blood_nominate_public(
             else None
         ),
         winner=outcome.winner,
+        reveal=_blood_reveal_public(blood.build_view(state).reveal),
         message=outcome.message,
         public_log=_blood_log_public(state.public_log),
         phase=outcome.phase,
+    )
+
+
+def _blood_reveal_public(
+    reveal: blood.RevealView | None,
+) -> BloodRevealPublic | None:
+    if reveal is None:
+        return None
+    return BloodRevealPublic(
+        murderer_id=reveal.murderer_id,
+        murderer_name=reveal.murderer_name,
     )
 
 
@@ -853,6 +960,7 @@ def _blood_night_public(
         day=outcome.day,
         phase=outcome.phase,
         winner=outcome.winner,
+        reveal=_blood_reveal_public(blood.build_view(state).reveal),
         message=outcome.message,
         public_log=_blood_log_public(state.public_log),
     )

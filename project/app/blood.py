@@ -12,9 +12,10 @@ from typing import Callable, Literal
 from app.config import (
     BLOOD_INITIAL_SUSPICION_BASE,
     BLOOD_INITIAL_SUSPICION_JITTER,
+    BLOOD_MAX_DEFENSE_SPEAK_PER_DAY,
+    BLOOD_MAX_FACTS_PER_DAY,
     BLOOD_MAX_LINE_CHARS,
     BLOOD_MAX_SPEAK_PER_DAY,
-    BLOOD_MAX_SPECTATOR_ROUNDS,
     BLOOD_MAX_SUSPICION,
     BLOOD_PRIVATE_FACTS_MAX,
     BLOOD_PRIVATE_FACTS_MIN,
@@ -22,13 +23,14 @@ from app.config import (
     BLOOD_SUSPICION_FACT,
     BLOOD_SUSPICION_MENTION,
     BLOOD_SUSPICION_MURDERER,
+    BLOOD_VOTE_REASON_MAX_CHARS,
 )
 from app.models import Script
 
 logger = logging.getLogger(__name__)
 
 RoleKind = Literal["villager", "murderer"]
-Phase = Literal["discussion", "night", "ended"]
+Phase = Literal["discussion", "defense", "night", "ended"]
 Winner = Literal["good", "murderer"]
 
 YOU_ID = "p0"
@@ -55,13 +57,31 @@ FALLBACK_PUBLICS: dict[str, str] = {
     "p4": "旅客",
     "p5": "马夫",
 }
-SPECTATOR_LINES: tuple[str, ...] = (
-    "我觉得{name}有些不对劲，可也说不上来是哪一步。",
-    "那晚走廊里很冷，{name}的话我信一半。",
-    "我听见楼上有响动，{name}那时候在哪一层？",
-    "账面上的事我还记得，{name}最好想清楚再开口。",
-)
+AGENT_ADDRESS_ALIASES: dict[str, tuple[str, ...]] = {
+    "p1": ("沈玉兰", "沈老板娘", "沈老板", "老板娘"),
+    "p2": ("周砚青", "周先生", "账房"),
+    "p3": ("阿蘅",),
+    "p4": ("陆明川", "陆先生", "陆老板"),
+    "p5": ("老韩",),
+}
+YOU_WITNESS_KEYWORDS: tuple[str, ...] = ("书房", "楼梯口", "拨火棍")
+YOU_WITNESS_FALLBACK: str = "你记得楼上书房里闹过一阵响动，像是桌椅被撞了一下。"
 FORBIDDEN_AGENT_CLAIMS: tuple[str, ...] = ("我是凶手", "我是好人", "我是清白的")
+DEFENSE_FALLBACKS: dict[str, str] = {
+    "p1": "你提名我，我认一句：那晚我进过二楼，是点灯油查账，没进书房。要查就查谁在我之后下了楼。",
+    "p2": "你提名我，这笔账我不认。那晚我在楼梯口听见书房吵得凶，就没敢往前——听见和动手是两回事。",
+    "p3": "你提名我，我把话说明白：我上楼送过炭，灯太暗，书房门是掩着的，我没进去。谁最后出来，你们该问。",
+    "p4": "你提名我，我认我去过二楼。我是听见闷响才探头，没敢声张。可要说动手，我连拨火棍都没碰过。",
+    "p5": "你提名我，我认我没说全。那晚我在马厩添草，后来端热水进去，人已经没了。我瞒的是别的，不是人命。",
+}
+DEFENSE_FALLBACK_DEFAULT: str = (
+    "你提名我，我不能不答。那晚我在哪儿、做过什么，我都说了，没进过书房。"
+)
+VOTE_REASON_FALLBACKS: tuple[str, ...] = (
+    "我投{name}，他刚才的话前后对不上。",
+    "我投{name}，那一晚他一直没交代清楚。",
+    "我投{name}，这屋里数他的说法最含糊。",
+)
 
 
 @dataclass
@@ -77,6 +97,9 @@ class BloodPlayer:
     private_info: list[str] = field(default_factory=list)
     suspicion: dict[str, float] = field(default_factory=dict)
     alive: bool = True
+    released: set[int] = field(default_factory=set)
+    released_day: int = 0
+    released_today: int = 0
 
 
 @dataclass(frozen=True)
@@ -104,9 +127,14 @@ class BloodState:
     discussed: bool = False
     speak_count: int = 0
     nominated: bool = False
+    nominee_id: str | None = None
+    defense_speak_count: int = 0
     speak_cursor: int = 0
     winner: Winner | None = None
     message: str = ""
+    pending_hint: str = ""
+    pending_target_id: str | None = None
+    pending_fact: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -140,6 +168,14 @@ class YouView:
 
 
 @dataclass(frozen=True)
+class RevealView:
+    """终局揭晓的凶手身份。"""
+
+    murderer_id: str
+    murderer_name: str
+
+
+@dataclass(frozen=True)
 class BloodView:
     """一局的公开视图。"""
 
@@ -151,6 +187,8 @@ class BloodView:
     public_log: tuple[BloodLogEntry, ...]
     dead: tuple[DeadView, ...]
     message: str
+    winner: Winner | None = None
+    reveal: RevealView | None = None
 
 
 @dataclass(frozen=True)
@@ -174,22 +212,36 @@ class TalkOutcome:
 
 @dataclass(frozen=True)
 class VoteResult:
-    """一名玩家的投票。"""
+    """一名玩家的投票，agent 附带一句公开理由。"""
 
     voter_id: str
     voter_name: str
     target_id: str
     target_name: str
+    reason: str = ""
 
 
 @dataclass(frozen=True)
-class NominateOutcome:
-    """提名与投票结算的结果。"""
+class DefenseOutcome:
+    """提名后进入自辩阶段的结果。"""
+
+    ok: bool
+    error: str | None
+    target: BloodPlayer | None = None
+    defense: TalkReply | None = None
+    message: str = ""
+    phase: Phase = "discussion"
+
+
+@dataclass(frozen=True)
+class VoteOutcome:
+    """投票与处决结算的结果。"""
 
     ok: bool
     error: str | None
     votes: tuple[VoteResult, ...] = ()
     tally: dict[str, int] = field(default_factory=dict)
+    threshold: int = 0
     executed: BloodPlayer | None = None
     winner: Winner | None = None
     message: str = ""
@@ -297,6 +349,7 @@ def _private_info(
         return [
             "你只是个路过的旅客，这里的旧事你一概不知。",
             "暴雪封路，天亮前谁也走不了。",
+            _you_witness_line(script, rng),
         ]
     facts = [
         fact
@@ -316,6 +369,19 @@ def _private_info(
         rng.randint(BLOOD_PRIVATE_FACTS_MIN, BLOOD_PRIVATE_FACTS_MAX),
     )
     return [fact.text for fact in rng.sample(pool, count)]
+
+
+def _you_witness_line(script: Script, rng: random.Random) -> str:
+    """给真人一条与命案现场相关、且来自剧本事实的私密见闻。"""
+    pool = [
+        fact
+        for fact in script.facts
+        if fact.sensitivity <= BLOOD_PRIVATE_MAX_SENSITIVITY
+        and any(keyword in fact.text for keyword in YOU_WITNESS_KEYWORDS)
+    ]
+    if not pool:
+        return YOU_WITNESS_FALLBACK
+    return f"你记得那晚的一条：{rng.choice(pool).text}"
 
 
 def _init_suspicion(state: BloodState, rng: random.Random) -> None:
@@ -366,6 +432,51 @@ def _alive_agents(state: BloodState) -> list[BloodPlayer]:
 def _name_of(state: BloodState, player_id: str | None) -> str:
     player = _player(state, player_id)
     return player.name if player is not None else "有人"
+
+
+def _release_fact(
+    state: BloodState,
+    player: BloodPlayer,
+    allow: int,
+) -> str | None:
+    """按当天的条数上限，取一条尚未公开的私密信息备说。"""
+    if player.is_you:
+        return None
+    if player.released_day != state.day:
+        player.released_day = state.day
+        player.released_today = 0
+    if player.released_today >= allow:
+        return None
+    for index, text in enumerate(player.private_info):
+        if index in player.released:
+            continue
+        player.released.add(index)
+        player.released_today += 1
+        _log(
+            state,
+            {
+                "type": "release",
+                "day": state.day,
+                "speaker": player.id,
+                "index": index,
+            },
+        )
+        return text
+    return None
+
+
+def _mentioned_agent(state: BloodState, text: str) -> BloodPlayer | None:
+    """在被点名的人里取文本中出现最早的一位。"""
+    best: BloodPlayer | None = None
+    best_pos = len(text) + 1
+    for player in _alive_agents(state):
+        aliases = AGENT_ADDRESS_ALIASES.get(player.id, (player.name,))
+        for alias in aliases:
+            pos = text.find(alias)
+            if pos != -1 and pos < best_pos:
+                best = player
+                best_pos = pos
+    return best
 
 
 def _top_suspicion_target(
@@ -436,7 +547,13 @@ def _sanitize_agent_line(text: str) -> str:
     return flat
 
 
-def _fallback_line(state: BloodState, player: BloodPlayer) -> str:
+def _fallback_line(
+    state: BloodState,
+    player: BloodPlayer,
+    hint: str = "",
+) -> str:
+    if hint in {"defense", "accused"}:
+        return DEFENSE_FALLBACKS.get(player.id, DEFENSE_FALLBACK_DEFAULT)
     target = _name_of(state, _top_suspicion_target(state, player))
     template = FALLBACK_PUBLICS.get(player.id, "我也说不清。")
     if player.id == "p1":
@@ -456,14 +573,28 @@ def _agent_speak(
     state: BloodState,
     player: BloodPlayer,
     reply_fn: ReplyFn,
+    hint: str = "",
+    target_id: str | None = None,
+    allow_fact: int = 1,
 ) -> TalkReply:
+    state.pending_hint = hint
+    state.pending_target_id = target_id
+    fact = _release_fact(state, player, allow_fact)
+    state.pending_fact[player.id] = fact or ""
     text = ""
     try:
         text = _sanitize_agent_line(reply_fn(state, player))
     except Exception:  # 模型故障不打断回合，退回角色模板
         logger.warning("agent 发言生成失败：%s", player.id, exc_info=True)
+    finally:
+        state.pending_hint = ""
+        state.pending_target_id = None
+        state.pending_fact.pop(player.id, None)
     if not text:
-        text = _fallback_line(state, player)
+        text = _fallback_line(state, player, hint)
+    elif fact:
+        text = f"{text} 我还记得：{fact}"
+    text = _clip_line(text)
     _say(state, player.id, player.name, text)
     _apply_public_text(state, player.id, text)
     return TalkReply(speaker_id=player.id, speaker_name=player.name, text=text)
@@ -485,7 +616,7 @@ def _next_agent(state: BloodState) -> BloodPlayer | None:
 def _talk_precheck(state: BloodState) -> str | None:
     if state.phase == "ended":
         return "game_ended"
-    if state.phase != "discussion":
+    if state.phase not in ("discussion", "defense"):
         return "wrong_phase"
     if not _you(state).alive:
         return "you_are_dead"
@@ -497,13 +628,15 @@ def discuss(
     game_id: str,
     reply_fn: ReplyFn,
 ) -> TalkOutcome:
-    """白天讨论：每个存活 agent 各公开发言一句。"""
+    """白天讨论：每个存活 agent 各公开发言一句，并各放出一条私密信息。"""
     state = store.get(game_id)
     if state is None:
         return TalkOutcome(ok=False, error="game_not_found")
     error = _talk_precheck(state)
     if error is not None:
         return TalkOutcome(ok=False, error=error, phase=state.phase)
+    if state.phase != "discussion":
+        return TalkOutcome(ok=False, error="wrong_phase", phase=state.phase)
     if state.discussed:
         return TalkOutcome(ok=False, error="discuss_used", phase=state.phase)
     state.discussed = True
@@ -528,79 +661,76 @@ def speak(
     text: str,
     reply_fn: ReplyFn,
 ) -> TalkOutcome:
-    """真人公开发言一次，并触发一名 agent 轮流回应。"""
+    """真人公开发言一次，被点名者优先回应，自辩阶段被提名者优先。"""
     state = store.get(game_id)
     if state is None:
         return TalkOutcome(ok=False, error="game_not_found")
     error = _talk_precheck(state)
     if error is not None:
         return TalkOutcome(ok=False, error=error, phase=state.phase)
-    if state.speak_count >= BLOOD_MAX_SPEAK_PER_DAY:
+    if state.phase == "defense":
+        if state.defense_speak_count >= BLOOD_MAX_DEFENSE_SPEAK_PER_DAY:
+            return TalkOutcome(
+                ok=False, error="defense_speak_limit", phase=state.phase
+            )
+    elif state.speak_count >= BLOOD_MAX_SPEAK_PER_DAY:
         return TalkOutcome(ok=False, error="speak_limit", phase=state.phase)
     clean = _clip_line(text)
     if not clean:
         return TalkOutcome(ok=False, error="target_invalid", phase=state.phase)
-    state.speak_count += 1
+    if state.phase == "defense":
+        state.defense_speak_count += 1
+    else:
+        state.speak_count += 1
     you = _you(state)
     _say(state, you.id, you.name, clean)
     _apply_public_text(state, you.id, clean)
     replies: list[TalkReply] = []
-    agent = _next_agent(state)
+    mentioned = _mentioned_agent(state, clean)
+    agent = mentioned
+    if agent is None and state.phase == "defense":
+        nominee = _player(state, state.nominee_id)
+        if nominee is not None and nominee.alive:
+            agent = nominee
+    if agent is None:
+        agent = _next_agent(state)
     if agent is not None:
-        replies.append(_agent_speak(state, agent, reply_fn))
+        if mentioned is not None:
+            hint = "accused"
+        elif state.phase == "defense":
+            hint = "defense"
+        else:
+            hint = ""
+        replies.append(
+            _agent_speak(
+                state,
+                agent,
+                reply_fn,
+                hint=hint,
+                target_id=state.nominee_id,
+                allow_fact=BLOOD_MAX_FACTS_PER_DAY if hint else 1,
+            )
+        )
     _log(
         state,
         {
             "type": "speak",
             "day": state.day,
+            "phase": state.phase,
             "text": clean,
             "replied_by": [reply.speaker_id for reply in replies],
         },
     )
-    state.message = "话头被抛了出去，有人接了一句。"
+    if state.phase == "defense":
+        state.message = "质证还在继续。"
+    else:
+        state.message = "话头被抛了出去，有人接了一句。"
     return TalkOutcome(
         ok=True,
         error=None,
         replies=tuple(replies),
         phase=state.phase,
     )
-
-
-def _collect_votes(
-    state: BloodState,
-    you_target: str | None,
-) -> list[VoteResult]:
-    votes: list[VoteResult] = []
-    you = _you(state)
-    if you.alive and you_target is not None:
-        target = _player(state, you_target)
-        if target is not None and target.alive and not target.is_you:
-            votes.append(
-                VoteResult(you.id, you.name, target.id, target.name)
-            )
-    for agent in _alive_agents(state):
-        target_id = _top_suspicion_target(state, agent)
-        target = _player(state, target_id)
-        if target is None:
-            continue
-        votes.append(
-            VoteResult(agent.id, agent.name, target.id, target.name)
-        )
-    return votes
-
-
-def _resolve_votes(
-    state: BloodState,
-    votes: list[VoteResult],
-) -> tuple[dict[str, int], BloodPlayer | None]:
-    tally = Counter(vote.target_id for vote in votes)
-    if not tally:
-        return {}, None
-    top = max(tally.values())
-    leaders = [target_id for target_id, count in tally.items() if count == top]
-    if len(leaders) != 1:
-        return dict(tally), None
-    return dict(tally), _player(state, leaders[0])
 
 
 def _judge(state: BloodState) -> Winner | None:
@@ -629,6 +759,14 @@ def _declare_winner(state: BloodState, winner: Winner, reason: str) -> None:
     _say(state, "system", "旁白", reason)
 
 
+def _end_with_you_out(state: BloodState, reason: str) -> None:
+    """真人出局即终局：不再用模板把剩余回合跑完。"""
+    state.phase = "ended"
+    state.message = reason
+    _log(state, {"type": "end", "day": state.day, "reason": "you_out"})
+    _say(state, "system", "旁白", reason)
+
+
 def _system_kill_target(state: BloodState) -> BloodPlayer | None:
     murderer = _player(state, state.murderer_id)
     if murderer is None:
@@ -643,88 +781,192 @@ def _system_kill_target(state: BloodState) -> BloodPlayer | None:
     return max(candidates, key=lambda p: murderer.suspicion.get(p.id, 0.0))
 
 
-def _system_night(state: BloodState) -> Winner | None:
-    victim = _system_kill_target(state)
-    if victim is not None:
-        victim.alive = False
-        _say(state, "system", "旁白", f"夜里，{victim.name} 没能等到天亮。")
-    _log(
-        state,
-        {
-            "type": "night",
-            "day": state.day,
-            "killed": victim.id if victim is not None else None,
-        },
-    )
-    return _judge(state)
+
+def _fallback_reason(
+    state: BloodState,
+    voter: BloodPlayer,
+    target: BloodPlayer,
+) -> str:
+    index = int(voter.id[1:]) % len(VOTE_REASON_FALLBACKS)
+    return VOTE_REASON_FALLBACKS[index].format(name=target.name)
+
+
+def _agent_vote(
+    state: BloodState,
+    agent: BloodPlayer,
+    reply_fn: ReplyFn,
+) -> VoteResult | None:
+    """agent 投给最怀疑的人，并附一句可撒谎的公开理由。"""
+    target = _player(state, _top_suspicion_target(state, agent))
+    if target is None:
+        return None
+    state.pending_hint = "vote_reason"
+    state.pending_target_id = target.id
+    reason = ""
+    try:
+        raw = reply_fn(state, agent)
+        reason = _clip_line(raw, BLOOD_VOTE_REASON_MAX_CHARS)
+    except Exception:
+        logger.warning("投票理由生成失败：%s", agent.id, exc_info=True)
+    finally:
+        state.pending_hint = ""
+        state.pending_target_id = None
+    if any(claim in reason for claim in FORBIDDEN_AGENT_CLAIMS):
+        reason = ""
+    if not reason:
+        reason = _fallback_reason(state, agent, target)
+    return VoteResult(agent.id, agent.name, target.id, target.name, reason)
+
+
+def _resolve_votes(
+    state: BloodState,
+    votes: list[VoteResult],
+) -> tuple[dict[str, int], int, BloodPlayer | None]:
+    """按严格过半处决：得票必须大于存活人数的一半，且不得并列最高。"""
+    alive_count = sum(1 for player in state.players if player.alive)
+    threshold = alive_count // 2 + 1
+    tally = Counter(vote.target_id for vote in votes)
+    if not tally:
+        return {}, threshold, None
+    top = max(tally.values())
+    leaders = [target_id for target_id, count in tally.items() if count == top]
+    if len(leaders) != 1 or top < threshold:
+        return dict(tally), threshold, None
+    return dict(tally), threshold, _player(state, leaders[0])
+
+
+def _vote_log_entry(state: BloodState, votes: list[VoteResult]) -> dict[str, object]:
+    return {
+        "type": "vote",
+        "day": state.day,
+        "votes": [
+            {
+                "voter_id": vote.voter_id,
+                "target_id": vote.target_id,
+                "reason": vote.reason,
+            }
+            for vote in votes
+        ],
+    }
 
 
 def nominate(
     store: BloodStore,
     game_id: str,
     target_id: str,
-) -> NominateOutcome:
-    """发起提名并结算全场投票，票高者处决，平票无人处决。"""
+    reply_fn: ReplyFn,
+) -> DefenseOutcome:
+    """提名进入自辩阶段，由被提名者先回应，不立即结算处决。"""
     state = store.get(game_id)
     if state is None:
-        return NominateOutcome(ok=False, error="game_not_found")
+        return DefenseOutcome(ok=False, error="game_not_found")
     error = _talk_precheck(state)
     if error is not None:
-        return NominateOutcome(ok=False, error=error, phase=state.phase)
+        return DefenseOutcome(ok=False, error=error, phase=state.phase)
     if state.nominated:
-        return NominateOutcome(ok=False, error="nominate_used", phase=state.phase)
+        return DefenseOutcome(ok=False, error="nominate_used", phase=state.phase)
+    if state.phase != "discussion":
+        return DefenseOutcome(ok=False, error="wrong_phase", phase=state.phase)
     target = _player(state, target_id)
     if target is None:
-        return NominateOutcome(ok=False, error="target_not_found", phase=state.phase)
+        return DefenseOutcome(
+            ok=False, error="target_not_found", phase=state.phase
+        )
     if not target.alive:
-        return NominateOutcome(ok=False, error="target_dead", phase=state.phase)
+        return DefenseOutcome(ok=False, error="target_dead", phase=state.phase)
     if target.is_you:
-        return NominateOutcome(ok=False, error="target_invalid", phase=state.phase)
+        return DefenseOutcome(
+            ok=False, error="target_invalid", phase=state.phase
+        )
     state.nominated = True
-    votes = _collect_votes(state, target.id)
-    tally, executed = _resolve_votes(state, votes)
-    if executed is not None:
-        executed.alive = False
-        _say(state, "system", "旁白", f"{executed.name} 被投票处决。")
-        message = f"{executed.name} 被处决，天黑了。"
-    else:
-        message = "票数持平，没有人被处决，天黑了。"
+    state.phase = "defense"
+    state.nominee_id = target.id
+    state.defense_speak_count = 0
+    _say(state, "system", "旁白", f"{target.name} 被提名。先听他自辩。")
+    defense = _agent_speak(
+        state,
+        target,
+        reply_fn,
+        hint="defense",
+        allow_fact=BLOOD_MAX_FACTS_PER_DAY,
+    )
+    state.message = f"{target.name} 被提名，先自辩，随后投票。"
     _log(
         state,
         {
             "type": "nominate",
             "day": state.day,
             "target": target.id,
-            "votes": [
-                {"voter_id": vote.voter_id, "target_id": vote.target_id}
-                for vote in votes
-            ],
-            "tally": dict(tally),
-            "executed": executed.id if executed is not None else None,
+            "defense_by": defense.speaker_id,
         },
     )
+    return DefenseOutcome(
+        ok=True,
+        error=None,
+        target=target,
+        defense=defense,
+        message=state.message,
+        phase=state.phase,
+    )
+
+
+def vote(
+    store: BloodStore,
+    game_id: str,
+    target_id: str,
+    reply_fn: ReplyFn,
+) -> VoteOutcome:
+    """全体存活玩家投票，得票严格过半才处决；真人可投提名目标之外的人。"""
+    state = store.get(game_id)
+    if state is None:
+        return VoteOutcome(ok=False, error="game_not_found")
+    if state.phase == "ended":
+        return VoteOutcome(ok=False, error="game_ended", phase=state.phase)
+    if state.phase != "defense":
+        return VoteOutcome(ok=False, error="wrong_phase", phase=state.phase)
+    you = _you(state)
+    if not you.alive:
+        return VoteOutcome(ok=False, error="you_are_dead", phase=state.phase)
+    target = _player(state, target_id)
+    if target is None:
+        return VoteOutcome(
+            ok=False, error="target_not_found", phase=state.phase
+        )
+    if not target.alive:
+        return VoteOutcome(ok=False, error="target_dead", phase=state.phase)
+    if target.is_you:
+        return VoteOutcome(ok=False, error="target_invalid", phase=state.phase)
+    votes: list[VoteResult] = [
+        VoteResult(you.id, you.name, target.id, target.name)
+    ]
+    for agent in _alive_agents(state):
+        agent_vote = _agent_vote(state, agent, reply_fn)
+        if agent_vote is not None:
+            votes.append(agent_vote)
+    tally, threshold, executed = _resolve_votes(state, votes)
+    if executed is not None:
+        executed.alive = False
+        _say(state, "system", "旁白", f"{executed.name} 被投票处决。")
+        state.message = f"{executed.name} 被处决，天黑了。"
+    else:
+        top = max(tally.values(), default=0)
+        state.message = (
+            f"最高 {top} 票，没过 {threshold} 票门槛，没有人被处决。"
+        )
+    _log(state, _vote_log_entry(state, votes))
     winner = _judge(state)
     if winner is not None:
         _declare_winner(state, winner, _win_text(winner))
-        return NominateOutcome(
-            ok=True,
-            error=None,
-            votes=tuple(votes),
-            tally=dict(tally),
-            executed=executed,
-            winner=winner,
-            message=state.message,
-            phase=state.phase,
-        )
-    state.phase = "night"
-    state.message = message
-    if not _you(state).alive:
-        _run_spectator(state)
-    return NominateOutcome(
+    elif not you.alive:
+        _end_with_you_out(state, f"{you.name} 出局了，本局到此为止。")
+    else:
+        state.phase = "night"
+    return VoteOutcome(
         ok=True,
         error=None,
         votes=tuple(votes),
         tally=dict(tally),
+        threshold=threshold,
         executed=executed,
         winner=state.winner,
         message=state.message,
@@ -803,10 +1045,19 @@ def night(
             winner=state.winner,
             message=state.message,
         )
+    if not you.alive:
+        _end_with_you_out(state, f"{you.name} 没能等到天亮，本局到此为止。")
+        return NightOutcome(
+            ok=True,
+            error=None,
+            killed=victim,
+            day=state.day,
+            phase=state.phase,
+            winner=state.winner,
+            message=state.message,
+        )
     _reset_day(state)
     state.message = f"第 {state.day} 天，天亮了。"
-    if not you.alive:
-        _run_spectator(state)
     return NightOutcome(
         ok=True,
         error=None,
@@ -824,74 +1075,23 @@ def _reset_day(state: BloodState) -> None:
     state.discussed = False
     state.speak_count = 0
     state.nominated = False
+    state.nominee_id = None
+    state.defense_speak_count = 0
     state.speak_cursor = 0
     _log(state, {"type": "phase", "day": state.day, "phase": "discussion"})
 
 
-def _spectator_discussion(state: BloodState) -> None:
-    for index, player in enumerate(_alive_agents(state)):
-        target = _name_of(state, _top_suspicion_target(state, player))
-        template = SPECTATOR_LINES[(index + state.day) % len(SPECTATOR_LINES)]
-        text = template.format(name=target)
-        _say(state, player.id, player.name, text)
-        _apply_public_text(state, player.id, text)
-    _log(state, {"type": "discuss", "day": state.day, "spectator": True})
-
-
-def _run_spectator(state: BloodState) -> None:
-    """真人出局后用模板把剩余回合推到终局，供观战回看。"""
-    if state.phase == "night":
-        winner = _system_night(state)
-        if winner is not None:
-            _declare_winner(state, winner, _win_text(winner))
-            return
-        _reset_day(state)
-    for _ in range(BLOOD_MAX_SPECTATOR_ROUNDS):
-        if state.phase == "ended" or state.winner is not None:
-            return
-        _spectator_discussion(state)
-        votes: list[VoteResult] = []
-        for agent in _alive_agents(state):
-            target = _player(state, _top_suspicion_target(state, agent))
-            if target is not None:
-                votes.append(
-                    VoteResult(agent.id, agent.name, target.id, target.name)
-                )
-        tally, executed = _resolve_votes(state, votes)
-        if executed is not None:
-            executed.alive = False
-            _say(state, "system", "旁白", f"{executed.name} 被投票处决。")
-        _log(
-            state,
-            {
-                "type": "nominate",
-                "day": state.day,
-                "votes": [
-                    {"voter_id": vote.voter_id, "target_id": vote.target_id}
-                    for vote in votes
-                ],
-                "tally": dict(tally),
-                "executed": executed.id if executed is not None else None,
-                "spectator": True,
-            },
-        )
-        winner = _judge(state)
-        if winner is not None:
-            _declare_winner(state, winner, _win_text(winner))
-            return
-        state.phase = "night"
-        winner = _system_night(state)
-        if winner is not None:
-            _declare_winner(state, winner, _win_text(winner))
-            return
-        _reset_day(state)
-    winner = _judge(state) or "murderer"
-    _declare_winner(state, winner, "风雪渐停，牌桌上的话终于说尽了。")
-
-
 def build_view(state: BloodState) -> BloodView:
-    """生成公开视图，真人身份只放在 you 字段。"""
+    """生成公开视图，终局时附上凶手揭晓。"""
     you = _you(state)
+    reveal: RevealView | None = None
+    if state.phase == "ended":
+        murderer = _player(state, state.murderer_id)
+        if murderer is not None:
+            reveal = RevealView(
+                murderer_id=murderer.id,
+                murderer_name=murderer.name,
+            )
     return BloodView(
         game_id=state.game_id,
         day=state.day,
@@ -920,6 +1120,8 @@ def build_view(state: BloodState) -> BloodView:
             if not player.alive
         ),
         message=state.message,
+        winner=state.winner,
+        reveal=reveal,
     )
 
 
