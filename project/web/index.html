@@ -95,6 +95,10 @@
         <p id="combine-title" class="combine-title"></p>
         <p id="combine-text" class="combine-text"></p>
         <p id="combine-pressure" class="combine-pressure"></p>
+        <p id="combine-reaction" class="combine-reaction hidden"></p>
+        <div class="combine-actions">
+          <button id="combine-followup" class="combine-followup hidden" type="button">拿这条去问他</button>
+        </div>
       </div>
     </div>
 
@@ -107,11 +111,13 @@
           <div class="hand-title">手边 · 物证<span id="hand-hint" class="hand-hint">点纸片查看详情</span></div>
           <div id="clue-hand" class="clue-hand"></div>
           <div id="hand-actions" class="hand-actions">
+            <p id="combine-rule" class="combine-rule">两张有共同人物/时间的物证可以拼</p>
             <p id="present-target" class="present-target"></p>
             <div class="hand-buttons">
               <button id="present-button" class="present-button hidden" type="button">出示</button>
               <button id="combine-button" class="combine-button" type="button"
                       aria-pressed="false">对撞</button>
+              <span id="combine-count" class="combine-count" aria-live="polite">对撞 3/3</span>
               <button id="combine-exit" class="combine-exit hidden" type="button">退出</button>
             </div>
           </div>

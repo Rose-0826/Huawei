@@ -15,6 +15,8 @@ const state = {
   combineMode: false,
   combinePicks: [],
   combineRemaining: null,
+  combineMax: 3,
+  combineTarget: null,
   busy: false,
   ended: false,
   accuseArmed: false,
@@ -89,7 +91,7 @@ async function api(path, options = {}) {
   return payload;
 }
 
-function toast(message, kind = "info") {
+function toast(message, kind = "info", duration = 3200) {
   const box = $("#toasts");
   while (box.children.length >= 4) {
     box.firstElementChild.remove();
@@ -99,7 +101,7 @@ function toast(message, kind = "info") {
   setTimeout(() => {
     item.classList.add("leaving");
     setTimeout(() => item.remove(), 220);
-  }, 3200);
+  }, duration);
 }
 
 function moodFor(value) {
@@ -522,14 +524,65 @@ function refreshControls() {
   $("#present-target").textContent = presentHint;
   $("#present-button").title = presentHint;
 
-  updateHandHint(twoClues, exhausted);
+  updateHandHint(twoClues);
+  updateCombineCount();
 
   if (!role && !confronting) {
     $("#question-input").placeholder = "先点左边一个人，再问";
   }
 }
 
-function updateHandHint(twoClues, exhausted) {
+function combineRemainingNow() {
+  return typeof state.combineRemaining === "number"
+    ? state.combineRemaining
+    : state.combineMax;
+}
+
+function updateCombineCount() {
+  const node = $("#combine-count");
+  if (!node) {
+    return;
+  }
+  const max = state.combineMax > 0 ? state.combineMax : 3;
+  const remaining = Math.max(0, Math.min(combineRemainingNow(), max));
+  node.classList.toggle("exhausted", remaining === 0);
+  if (remaining === 0) {
+    node.textContent = "对撞次数用完";
+    node.title = "本局的对撞次数已经用完，重开一局才能再拼";
+    return;
+  }
+  node.textContent = remaining >= max
+    ? `对撞 ${remaining}/${max}`
+    : `剩 ${remaining} 次`;
+  node.title = `本局共 ${max} 次对撞，还剩 ${remaining} 次`;
+}
+
+function applyCombineMeta(data) {
+  if (!data) {
+    return;
+  }
+  if (typeof data.combine_max === "number" && data.combine_max > 0) {
+    state.combineMax = data.combine_max;
+  }
+  if (typeof data.combine_remaining === "number") {
+    state.combineRemaining = Math.max(0, data.combine_remaining);
+  }
+  updateCombineCount();
+}
+
+async function syncCombineState() {
+  if (!state.gameId) {
+    return;
+  }
+  try {
+    const data = await api(`/games/${state.gameId}`);
+    applyCombineMeta(data);
+  } catch (error) {
+    // 接口未就绪时保留本地默认值
+  }
+}
+
+function updateHandHint(twoClues) {
   const hint = $("#hand-hint");
   if (!hint || state.clues.length === 0) {
     return;
@@ -547,14 +600,7 @@ function updateHandHint(twoClues, exhausted) {
     }
     return;
   }
-  if (exhausted) {
-    hint.textContent = "点纸片查看详情 · 本局对撞次数用完了";
-    return;
-  }
-  if (typeof state.combineRemaining === "number" && state.combineRemaining < 3) {
-    hint.textContent = `点纸片查看详情 · 对撞剩 ${state.combineRemaining} 次`;
-    return;
-  }
+
   hint.textContent = "点纸片查看详情";
 }
 
@@ -627,7 +673,7 @@ function applyConfrontPressure(payload) {
 }
 
 function showTableEvidence(clue, options = {}) {
-  hideCombineCard();
+  suppressCombineCard();
   const { pinned = false, delta = 0 } = options;
   const box = $("#table-evidence");
   box.innerHTML = "";
@@ -657,6 +703,7 @@ function hideTableEvidence() {
   if (!box) {
     return;
   }
+  restoreCombineCard();
   clearTimeout(evidenceTimer);
   box.classList.remove("visible", "pinned");
   document.body.classList.remove("evidence-open");
@@ -726,6 +773,7 @@ function enterCombineMode() {
   if (state.confrontMode) {
     toggleConfrontMode();
   }
+  hideCombineCard();
   state.combineMode = true;
   state.combinePicks = [];
   state.selectedClueId = null;
@@ -847,6 +895,22 @@ function flyCombineToTable(first, second) {
   });
 }
 
+function resolveCombineTarget(data) {
+  const reaction = data && data.reaction ? data.reaction : null;
+  const pressureIds = data && data.pressure && typeof data.pressure === "object"
+    ? Object.keys(data.pressure)
+    : [];
+  const candidate = data && data.target_npc_id
+    ? data.target_npc_id
+    : (reaction && reaction.npc_id
+      ? reaction.npc_id
+      : pressureIds.find((id) => state.roles.some((role) => role.id === id)));
+  if (!candidate) {
+    return null;
+  }
+  return state.roles.some((role) => role.id === candidate) ? candidate : null;
+}
+
 function showCombineCard(data, pressureLines) {
   const card = $("#combine-card");
   $("#combine-title").textContent = data.title || "对撞";
@@ -859,6 +923,32 @@ function showCombineCard(data, pressureLines) {
     pressure.textContent = "";
     pressure.classList.add("hidden");
   }
+
+  const reaction = data.reaction && data.reaction.line ? data.reaction : null;
+  const reactionNode = $("#combine-reaction");
+  if (reaction) {
+    reactionNode.textContent = reaction.line;
+    reactionNode.classList.remove("hidden");
+  } else {
+    reactionNode.textContent = "";
+    reactionNode.classList.add("hidden");
+  }
+
+  state.combineTarget = resolveCombineTarget(data);
+  const followup = $("#combine-followup");
+  if (state.combineTarget) {
+    const targetRole = state.roles.find((role) => role.id === state.combineTarget);
+    followup.classList.remove("hidden");
+    followup.disabled = false;
+    followup.title = targetRole
+      ? `带这条推断去问${targetRole.name}`
+      : "带这条推断去问相关的人";
+  } else {
+    followup.classList.add("hidden");
+    followup.disabled = true;
+    followup.removeAttribute("title");
+  }
+
   card.classList.remove("hidden", "visible", "stamping");
   void card.offsetWidth;
   card.classList.add("visible", "stamping");
@@ -872,8 +962,45 @@ function hideCombineCard() {
     return;
   }
   clearTimeout(combineTimer);
+  state.combineTarget = null;
+  card.classList.remove("visible", "stamping", "suppressed");
   card.classList.add("hidden");
-  card.classList.remove("visible", "stamping");
+  const followup = $("#combine-followup");
+  if (followup) {
+    followup.classList.add("hidden");
+    followup.disabled = true;
+  }
+}
+
+function suppressCombineCard() {
+  const card = $("#combine-card");
+  if (!card || !card.classList.contains("visible")) {
+    return;
+  }
+  card.classList.add("suppressed");
+}
+
+function restoreCombineCard() {
+  const card = $("#combine-card");
+  if (!card) {
+    return;
+  }
+  card.classList.remove("suppressed");
+}
+
+function followupCombine() {
+  if (state.busy || state.ended || !state.combineTarget) {
+    return;
+  }
+  const targetId = state.combineTarget;
+  if (state.combineMode) {
+    exitCombineMode();
+  }
+  selectNpc(targetId);
+  const input = $("#question-input");
+  input.placeholder = "用这条推断问他……";
+  input.focus();
+  refreshControls();
 }
 
 async function handleCombine() {
@@ -904,7 +1031,10 @@ async function handleCombine() {
       body: JSON.stringify({ clue_ids: [first.id, second.id] }),
     });
     if (typeof data.remaining === "number") {
-      state.combineRemaining = data.remaining;
+      state.combineRemaining = Math.max(0, data.remaining);
+    }
+    if (typeof data.combine_max === "number" && data.combine_max > 0) {
+      state.combineMax = data.combine_max;
     }
     const pressureLines = applyCombinePressure(data.pressure || {});
     state.combineMode = false;
@@ -917,10 +1047,16 @@ async function handleCombine() {
     refreshControls();
   } catch (error) {
     const notReady = error.status === 404 || error.status === 405;
-    toast(
-      notReady ? "这两张纸暂时对不上" : error.detail || "这两张纸对不上",
-      "warn"
-    );
+    let message = error.detail || "";
+    if (!message) {
+      message = notReady
+        ? "对撞接口暂时没有接通"
+        : "这两张物证对不上，试试有共同人物/时间的物证";
+    } else if (message === "这两张物证对不上") {
+      message = "这两张物证对不上，试试有共同人物/时间的物证";
+    }
+    toast(message, "warn", 5200);
+    await syncCombineState();
   } finally {
     state.busy = false;
     refreshControls();
@@ -1278,6 +1414,8 @@ function resetUI() {
   state.combineMode = false;
   state.combinePicks = [];
   state.combineRemaining = null;
+  state.combineMax = 3;
+  state.combineTarget = null;
   state.busy = false;
   state.ended = false;
   resetAccuseArm();
@@ -1309,6 +1447,12 @@ function resetUI() {
   $("#combine-button").setAttribute("aria-pressed", "false");
   $("#combine-exit").classList.add("hidden");
   $("#hand-hint").textContent = "点纸片查看详情";
+  $("#combine-count").textContent = "对撞 3/3";
+  $("#combine-count").classList.remove("exhausted");
+  $("#combine-reaction").textContent = "";
+  $("#combine-reaction").classList.add("hidden");
+  $("#combine-followup").classList.add("hidden");
+  $("#combine-followup").disabled = true;
   hideCombineCard();
   $("#table-evidence").classList.add("hidden");
   $("#table-evidence").classList.remove("visible", "pinned");
@@ -1344,6 +1488,7 @@ async function startGame() {
     state.pressure = { ...(data.pressure || {}) };
     state.ended = Boolean(data.ended);
     state.seenClues = new Set();
+    applyCombineMeta(data);
 
     $("#game-title").textContent = data.title;
     $("#era").textContent = data.era;
@@ -1351,6 +1496,9 @@ async function startGame() {
     renderSideRail();
     renderClues();
     refreshControls();
+    if (typeof data.combine_remaining !== "number") {
+      syncCombineState();
+    }
     speak(data.opening, { narration: true });
   } catch (error) {
     await speak("今晚没有接通。", { narration: true });
@@ -1374,6 +1522,7 @@ function init() {
   $("#present-button").addEventListener("click", handlePresent);
   $("#combine-button").addEventListener("click", handleCombineClick);
   $("#combine-exit").addEventListener("click", exitCombineMode);
+  $("#combine-followup").addEventListener("click", followupCombine);
   $("#confront-toggle").addEventListener("click", toggleConfrontMode);
   $("#restart-verdict").addEventListener("click", restartGame);
   refreshControls();
