@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import MAX_QUESTION_CHARS
+from app.engine.social import SocialEvent
 from app.game import (
     AskOutcome,
     CombineOutcome,
@@ -20,8 +22,10 @@ from app.game import (
     build_view,
     combine,
     confront,
+    get_event,
     get_view,
     present_clue,
+    resolve_event_choice,
 )
 from app.models import Clue, Script
 from app.script_loader import DEFAULT_SCRIPT_PATH, load_script
@@ -167,6 +171,51 @@ class AccuseResponse(APIModel):
     missed_fact_ids: list[str]
 
 
+class EventSpeakerPublic(APIModel):
+    """主动插话里的说话人或对象。"""
+
+    id: str
+    name: str
+
+
+class EventChoicePublic(APIModel):
+    """玩家对主动插话的一个回应选项。"""
+
+    id: str
+    label: str
+
+
+class EventPublic(APIModel):
+    """一次主动插话的公开内容。"""
+
+    id: str
+    kind: str
+    speaker: EventSpeakerPublic
+    target: EventSpeakerPublic | None
+    line: str
+    choices: list[EventChoicePublic]
+
+
+class EventResponse(APIModel):
+    """查询主动插话的响应，没有待处理事件时 event 为空。"""
+
+    event: EventPublic | None
+
+
+class EventChoiceRequest(APIModel):
+    """回应主动插话的请求。"""
+
+    choice: Literal["press", "dismiss"]
+
+
+class EventChoiceResponse(APIModel):
+    """回应主动插话后的结果。"""
+
+    reply: str
+    pressure: dict[str, float]
+    event: EventPublic | None = None
+
+
 GAME_ERRORS: dict[str, tuple[int, str]] = {
     "game_not_found": (404, "找不到这一局"),
     "npc_not_found": (404, "找不到这个角色"),
@@ -183,6 +232,7 @@ GAME_ERRORS: dict[str, tuple[int, str]] = {
     "combine_already_used": (409, "这两张物证已经对撞过了"),
     "combine_limit_reached": (409, "本局的对撞次数已经用完"),
     "confront_failed": (500, "两人的回答没有形成可比的口径"),
+    "no_pending_event": (409, "现在没有人主动开口"),
 }
 
 COMBINE_FAILURE_TEMPLATES: dict[str, str] = {
@@ -311,6 +361,37 @@ def create_app(
         )
 
     @application.get(
+        "/games/{game_id}/event",
+        response_model=EventResponse,
+    )
+    def get_pending_event(game_id: str) -> EventResponse:
+        """查询当前是否有 NPC 主动开口。"""
+        outcome = get_event(game_store, game_id)
+        _raise_error(outcome.error)
+        return EventResponse(event=_event_public(outcome.event))
+
+    @application.post(
+        "/games/{game_id}/event",
+        response_model=EventChoiceResponse,
+    )
+    def choose_event(
+        game_id: str,
+        request: EventChoiceRequest,
+    ) -> EventChoiceResponse:
+        """追问或让人走，结算说话人的压力变化。"""
+        outcome = resolve_event_choice(
+            game_store,
+            game_id,
+            request.choice,
+        )
+        _raise_error(outcome.error)
+        return EventChoiceResponse(
+            reply=outcome.reply or "",
+            pressure=dict(outcome.pressure),
+            event=None,
+        )
+
+    @application.get(
         "/games/{game_id}",
         response_model=GameStateResponse,
     )
@@ -355,6 +436,33 @@ def create_app(
 
 def _clue_public(clue: Clue) -> CluePublic:
     return CluePublic(id=clue.id, name=clue.name, desc=clue.desc)
+
+
+def _event_public(event: SocialEvent | None) -> EventPublic | None:
+    """把插话对象转成只含公开字段的接口模型。"""
+    if event is None:
+        return None
+    return EventPublic(
+        id=event.id,
+        kind=event.kind,
+        speaker=EventSpeakerPublic(
+            id=event.speaker_id,
+            name=event.speaker_name,
+        ),
+        target=(
+            EventSpeakerPublic(
+                id=event.target_id,
+                name=event.target_name or "",
+            )
+            if event.target_id is not None
+            else None
+        ),
+        line=event.line,
+        choices=[
+            EventChoicePublic(id=choice.id, label=choice.label)
+            for choice in event.choices
+        ],
+    )
 
 
 def _state_public(view: GameView) -> GameStateResponse:

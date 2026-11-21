@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.config import (
     CONFRONT_PRESSURE,
     MAX_COMBINE_PER_GAME,
     MAX_PRESSURE,
     MAX_QUESTION_CHARS,
+    MAX_SOCIAL_PER_GAME,
     PRESSURE_PER_CLUE,
+    SOCIAL_FIRST_AT,
+    SOCIAL_INTERVAL,
 )
 from app.engine.combine import find_rule, reaction_line
 from app.engine.composer import compose
@@ -18,6 +21,7 @@ from app.engine.confront import Alignment, Statement, compare_testimony
 from app.engine.intent import parse_intent
 from app.engine.policy import Decision, DecisionAction, decide
 from app.engine.retrieval import retrieve
+from app.engine.social import SocialEvent, build_event, resolve_event
 from app.llm import LLMClient
 from app.models import Clue, Fact, Role, Script
 
@@ -40,6 +44,10 @@ class GameState:
     accusation: AccusationOutcome | None = None
     combine_pairs: set[tuple[str, str]] = field(default_factory=set)
     combine_count: int = 0
+    action_count: int = 0
+    social_count: int = 0
+    pending_event: SocialEvent | None = None
+    social_history: list[SocialEvent] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -120,6 +128,26 @@ class RoleView:
 
 
 @dataclass(frozen=True)
+class EventOutcome:
+    """一次主动插话查询的结果。"""
+
+    ok: bool
+    error: str | None
+    event: SocialEvent | None
+
+
+@dataclass(frozen=True)
+class EventChoiceOutcome:
+    """玩家回应一次主动插话后的结果。"""
+
+    ok: bool
+    error: str | None
+    reply: str | None
+    pressure: dict[str, float]
+    event: SocialEvent | None = None
+
+
+@dataclass(frozen=True)
 class ClueView:
     """玩家可见的线索信息。"""
 
@@ -194,6 +222,7 @@ def ask(
     if len(text) > MAX_QUESTION_CHARS:
         return _ask_error("question_too_long")
     if state.last_questions.get(npc_id) == text:
+        _after_action(state, npc_id)
         return AskOutcome(
             ok=True,
             error=None,
@@ -202,7 +231,10 @@ def ask(
             unlocked_clue=None,
             action=None,
         )
-    return _answer(state, role, text, llm)
+    outcome = _answer(state, role, text, llm)
+    if outcome.ok:
+        _after_action(state, npc_id)
+    return outcome
 
 
 def present_clue(
@@ -243,7 +275,7 @@ def present_clue(
         if source_fact is not None and npc_id in source_fact.holders
         else None
     )
-    return _answer(
+    outcome = _answer(
         state,
         role,
         question,
@@ -253,6 +285,9 @@ def present_clue(
         fact_override=fact_override,
         clue_only=fact_override is None,
     )
+    if outcome.ok:
+        _after_action(state, npc_id)
+    return outcome
 
 
 def combine(
@@ -311,6 +346,7 @@ def combine(
                 name=target.name,
                 line=reaction_line(target.name),
             )
+    _after_action(state, target_npc_id)
     return CombineOutcome(
         ok=True,
         error=None,
@@ -387,6 +423,7 @@ def confront(
         for outcome in outcomes
         if outcome.unlocked_clue is not None
     )
+    _after_action(state, right.id)
     return ConfrontOutcome(
         ok=True,
         error=None,
@@ -407,6 +444,59 @@ def get_view(store: GameStore, game_id: str) -> GameView | None:
     if state is None:
         return None
     return build_view(state)
+
+
+def get_event(store: GameStore, game_id: str) -> EventOutcome:
+    """返回当前待处理的主动插话，没有时返回空事件。"""
+    state = store.get(game_id)
+    if state is None:
+        return EventOutcome(ok=False, error="game_not_found", event=None)
+    if state.ended:
+        return EventOutcome(ok=True, error=None, event=None)
+    return EventOutcome(ok=True, error=None, event=state.pending_event)
+
+
+def resolve_event_choice(
+    store: GameStore,
+    game_id: str,
+    choice: str,
+) -> EventChoiceOutcome:
+    """结算玩家回应，调整说话人压力并清掉待处理事件。"""
+    state = store.get(game_id)
+    if state is None:
+        return EventChoiceOutcome(
+            ok=False,
+            error="game_not_found",
+            reply=None,
+            pressure={},
+        )
+    if state.ended:
+        return EventChoiceOutcome(
+            ok=False,
+            error="game_ended",
+            reply=None,
+            pressure={},
+        )
+    event = state.pending_event
+    if event is None:
+        return EventChoiceOutcome(
+            ok=False,
+            error="no_pending_event",
+            reply=None,
+            pressure={},
+        )
+    reply, delta = resolve_event(event, choice)
+    current = state.pressure.get(event.speaker_id, 0.0)
+    updated = min(MAX_PRESSURE, max(0.0, current + delta))
+    state.pressure[event.speaker_id] = updated
+    state.pending_event = None
+    return EventChoiceOutcome(
+        ok=True,
+        error=None,
+        reply=reply,
+        pressure={event.speaker_id: updated},
+        event=None,
+    )
 
 
 def accuse(
@@ -606,6 +696,31 @@ def _combine_error(
         text=None,
         remaining=remaining,
     )
+
+
+def _after_action(state: GameState, current_npc_id: str | None) -> None:
+    """记录一次成功动作，并在第 3、6、9、12 次动作后生成插话。"""
+    state.action_count += 1
+    if state.pending_event is not None:
+        return
+    if state.social_count >= MAX_SOCIAL_PER_GAME:
+        return
+    if state.action_count < SOCIAL_FIRST_AT:
+        return
+    if state.action_count % SOCIAL_INTERVAL != 0:
+        return
+    event = build_event(
+        state.script,
+        state.pressure,
+        current_npc_id,
+        state.social_history,
+    )
+    if event is None:
+        return
+    event = replace(event, created_at=state.action_count)
+    state.social_count += 1
+    state.pending_event = event
+    state.social_history.append(event)
 
 
 def _remaining(state: GameState) -> int:
