@@ -104,6 +104,13 @@ COMBO_RULES: tuple[ComboRule, ...] = (
         pressure_npc="r1",
         pressure_delta=COMBINE_PRESSURE,
     ),
+    ComboRule(
+        clue_ids=("c02", "c05"),
+        title="登记簿与楼梯口",
+        text="她 23:05 还在楼梯口，登记簿又能证明那晚不在房——所谓早早回房站不住。",
+        pressure_npc="r1",
+        pressure_delta=COMBINE_PRESSURE,
+    ),
 )
 
 

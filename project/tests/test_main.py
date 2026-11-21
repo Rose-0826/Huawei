@@ -284,6 +284,8 @@ def test_accuse_returns_timeline_and_missed_ids(client: TestClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["correct"] is True
+    assert data["partial"] is False
+    assert data["dimensions"] == []
     assert [fact["fact_id"] for fact in data["timeline"]] == [
         "f05",
         "f06",
@@ -324,6 +326,8 @@ def test_accuse_wrong_suspect(client: TestClient, script: Script) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["correct"] is False
+    assert data["partial"] is False
+    assert data["dimensions"] == []
     assert [fact["fact_id"] for fact in data["timeline"]] == script.solution_path
     assert set(data["missed_fact_ids"]) == set(script.solution_path)
     assert all(fact["text"] == "" for fact in data["timeline"])

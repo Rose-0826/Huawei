@@ -63,6 +63,13 @@ class CluePublic(APIModel):
     desc: str
 
 
+class VerdictOptionPublic(APIModel):
+    """指认面板上的一个可选项。"""
+
+    id: str
+    label: str
+
+
 class GameStateResponse(APIModel):
     """开始或查询一局时返回的公开状态。"""
 
@@ -77,6 +84,7 @@ class GameStateResponse(APIModel):
     ended: bool
     combine_remaining: int
     combine_max: int
+    verdict_options: dict[str, list[VerdictOptionPublic]]
 
 
 class AskRequest(APIModel):
@@ -151,9 +159,12 @@ class ConfrontResponse(APIModel):
 
 
 class AccuseRequest(APIModel):
-    """指认请求。"""
+    """指认请求：凶手必填，动机、手法、时间可选。"""
 
     suspect_id: str = Field(min_length=1)
+    motive: str | None = Field(default=None, min_length=1)
+    method: str | None = Field(default=None, min_length=1)
+    time: str | None = Field(default=None, min_length=1)
 
 
 class TruthFact(APIModel):
@@ -163,10 +174,21 @@ class TruthFact(APIModel):
     text: str
 
 
+class DimensionPublic(APIModel):
+    """一个指认维度的判定结果。"""
+
+    id: str
+    label: str
+    choice: str
+    correct: bool
+
+
 class AccuseResponse(APIModel):
     """指认结果。"""
 
     correct: bool
+    partial: bool
+    dimensions: list[DimensionPublic]
     timeline: list[TruthFact]
     missed_fact_ids: list[str]
 
@@ -411,11 +433,28 @@ def create_app(
         request: AccuseRequest,
     ) -> AccuseResponse:
         """指认凶手，返回命中结果、真相时间线与漏掉的事实 id。"""
-        outcome = accuse(game_store, game_id, request.suspect_id)
+        outcome = accuse(
+            game_store,
+            game_id,
+            request.suspect_id,
+            motive=request.motive,
+            method=request.method,
+            time=request.time,
+        )
         _raise_error(outcome.error)
         missed = set(outcome.missed_fact_ids)
         return AccuseResponse(
             correct=outcome.correct,
+            partial=outcome.partial,
+            dimensions=[
+                DimensionPublic(
+                    id=dimension.id,
+                    label=dimension.label,
+                    choice=dimension.choice,
+                    correct=dimension.correct,
+                )
+                for dimension in outcome.dimensions
+            ],
             timeline=[
                 TruthFact(
                     fact_id=fact.id,
@@ -488,6 +527,13 @@ def _state_public(view: GameView) -> GameStateResponse:
         ended=view.ended,
         combine_remaining=view.combine_remaining,
         combine_max=view.combine_max,
+        verdict_options={
+            dimension: [
+                VerdictOptionPublic(id=option.id, label=option.label)
+                for option in options
+            ]
+            for dimension, options in view.verdict_options.items()
+        },
     )
 
 

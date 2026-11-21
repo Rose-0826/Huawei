@@ -146,15 +146,15 @@ SOCIAL_LINES: tuple[SocialLine, ...] = (
 )
 
 PRESS_REPLIES: dict[SocialKind, str] = {
-    "approach": "他顿了顿，还是开了口：“先生想问什么？”",
-    "demand": "他顿了顿，还是开了口：“您非要问，我也没有别的了。”",
-    "whisper": "他顿了顿，还是开了口：“您都听见了，我也不瞒了。”",
+    "approach": "对方顿了顿，还是开了口：“先生想问什么？”",
+    "demand": "对方顿了顿，还是开了口：“您非要问，我也没有别的了。”",
+    "whisper": "对方顿了顿，还是开了口：“您都听见了，我也不瞒了。”",
 }
 
 DISMISS_REPLIES: dict[SocialKind, str] = {
-    "approach": "他退回了阴影里，脚步很轻。",
-    "demand": "他退回了阴影里，门轻轻合上了。",
-    "whisper": "他退回了阴影里，廊下只剩风声。",
+    "approach": "那人退回了阴影里，脚步很轻。",
+    "demand": "那人退回了阴影里，门轻轻合上了。",
+    "whisper": "那人退回了阴影里，廊下只剩风声。",
 }
 
 

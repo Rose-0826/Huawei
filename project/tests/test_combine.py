@@ -239,11 +239,39 @@ def test_combine_rejects_missing_or_ended_game(
     assert combine(store, state.game_id, ("c01", "c02")).error == "game_ended"
 
 def test_all_rules_match_in_both_orders() -> None:
-    assert len(COMBO_RULES) == 12
+    assert len(COMBO_RULES) == 13
 
     for rule in COMBO_RULES:
         assert find_rule(rule.clue_ids) == rule
         assert find_rule(tuple(reversed(rule.clue_ids))) == rule
+
+
+def test_c02_c05_rule_links_stairs_and_register() -> None:
+    rule = find_rule(("c02", "c05"))
+
+    assert rule is not None
+    assert rule.title == "登记簿与楼梯口"
+    assert "23:05" in rule.text
+    assert "登记簿" in rule.text
+    assert rule.pressure_npc == "r1"
+    assert rule.pressure_delta == pytest.approx(0.10)
+
+
+def test_combine_c02_c05_hits_and_raises_r1_pressure(
+    store: GameStore,
+    script: Script,
+) -> None:
+    state = store.start(script)
+    _unlock(state, "c02", "c05")
+
+    outcome = combine(store, state.game_id, ("c05", "c02"))
+
+    assert outcome.ok is True
+    assert outcome.title == "登记簿与楼梯口"
+    assert outcome.target_npc_id == "r1"
+    assert outcome.pressure == {"r1": pytest.approx(0.10)}
+    assert state.pressure["r1"] == pytest.approx(0.10)
+    assert outcome.remaining == MAX_COMBINE_PER_GAME - 1
 
 
 def test_c02_c07_text_names_zhou_and_not_lao_han_at_stairs() -> None:

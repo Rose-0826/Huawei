@@ -22,6 +22,12 @@ from app.engine.intent import parse_intent
 from app.engine.policy import Decision, DecisionAction, decide
 from app.engine.retrieval import retrieve
 from app.engine.social import SocialEvent, build_event, resolve_event
+from app.engine.verdict import (
+    VERDICT_OPTIONS,
+    DimensionResult,
+    VerdictOption,
+    judge_dimensions,
+)
 from app.llm import LLMClient
 from app.models import Clue, Fact, Role, Script
 
@@ -93,6 +99,8 @@ class AccusationOutcome:
     correct: bool
     timeline: tuple[Fact, ...]
     missed_fact_ids: tuple[str, ...]
+    partial: bool = False
+    dimensions: tuple[DimensionResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -180,6 +188,7 @@ class GameView:
     ended: bool
     combine_remaining: int
     combine_max: int
+    verdict_options: dict[str, tuple[VerdictOption, ...]]
 
 
 class GameStore:
@@ -503,8 +512,11 @@ def accuse(
     store: GameStore,
     game_id: str,
     suspect_id: str,
+    motive: str | None = None,
+    method: str | None = None,
+    time: str | None = None,
 ) -> AccusationOutcome:
-    """指认凶手，返回命中结果、真相时间线和漏掉的破案链事实。"""
+    """指认凶手，可选地同时判定动机、手法与时间。"""
     state = store.get(game_id)
     if state is None:
         return _accusation_error("game_not_found")
@@ -526,12 +538,36 @@ def accuse(
         for fact_id in state.script.solution_path
         if fact_id not in state.disclosed_fact_ids
     )
+    choices = {
+        dimension_id: value
+        for dimension_id, value in (
+            ("motive", motive),
+            ("method", method),
+            ("time", time),
+        )
+        if value is not None
+    }
+    suspect_correct = suspect_id == state.script.culprit
+    if choices:
+        dimensions = judge_dimensions(choices)
+        correct = suspect_correct and all(
+            dimension.correct for dimension in dimensions
+        )
+        partial = suspect_correct and any(
+            dimension.correct for dimension in dimensions
+        )
+    else:
+        dimensions = ()
+        correct = suspect_correct
+        partial = False
     outcome = AccusationOutcome(
         ok=True,
         error=None,
-        correct=suspect_id == state.script.culprit,
+        correct=correct,
         timeline=timeline,
         missed_fact_ids=missed,
+        partial=partial,
+        dimensions=dimensions,
     )
     state.ended = True
     state.accusation = outcome
@@ -572,6 +608,7 @@ def build_view(state: GameState) -> GameView:
         ended=state.ended,
         combine_remaining=_remaining(state),
         combine_max=MAX_COMBINE_PER_GAME,
+        verdict_options=VERDICT_OPTIONS,
     )
 
 
@@ -682,6 +719,8 @@ def _accusation_error(error: str) -> AccusationOutcome:
         correct=False,
         timeline=(),
         missed_fact_ids=(),
+        partial=False,
+        dimensions=(),
     )
 
 

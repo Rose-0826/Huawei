@@ -307,6 +307,8 @@ def test_accuse_returns_truth_and_missed_facts(
 
     assert outcome.ok is True
     assert outcome.correct is True
+    assert outcome.partial is False
+    assert outcome.dimensions == ()
     assert [fact.id for fact in outcome.timeline] == script.solution_path
     assert outcome.missed_fact_ids == ("f05", "f06", "f08", "f15", "f16")
     assert state.ended is True
@@ -334,6 +336,8 @@ def test_accuse_wrong_suspect_marks_all_missed(
 
     assert outcome.ok is True
     assert outcome.correct is False
+    assert outcome.partial is False
+    assert outcome.dimensions == ()
     assert [fact.id for fact in outcome.timeline] == script.solution_path
     assert outcome.missed_fact_ids == tuple(script.solution_path)
 
