@@ -78,6 +78,14 @@
           </div>
           <span id="discussion-count" class="discussion-count">0 条</span>
         </header>
+        <div id="defense-card" class="defense-card hidden" aria-live="polite">
+          <p class="defense-kicker">
+            <span>被提名者自辩</span>
+            <span id="defense-target" class="defense-target"></span>
+          </p>
+          <p id="defense-speaker" class="defense-speaker"></p>
+          <p id="defense-text" class="defense-text"></p>
+        </div>
         <div id="vote-board" class="vote-board hidden" aria-live="polite"></div>
         <div id="discussion-scroll" class="discussion-scroll">
           <p id="discussion-empty" class="discussion-empty">大厅里还没人开口。</p>
@@ -121,7 +129,11 @@
       <dl class="end-facts">
         <div>
           <dt>凶手</dt>
-          <dd id="end-murderer">尚未揭晓</dd>
+          <dd id="end-murderer">终局揭晓</dd>
+        </div>
+        <div>
+          <dt>身份</dt>
+          <dd id="end-murderer-role">凶手</dd>
         </div>
         <div>
           <dt>你的身份</dt>

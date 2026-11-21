@@ -8,6 +8,7 @@
   const PHASE_LABEL = {
     discussion: "白天讨论",
     nomination: "提名投票",
+    defense: "自辩质证",
     night: "夜晚",
     ended: "结束",
   };
@@ -33,6 +34,8 @@
 
   const state = {
     mock: params.get("mock") === "1",
+    mockCase: params.get("case") || "",
+    mockVotesCast: 0,
     game: null,
     gameId: null,
     you: null,
@@ -45,6 +48,9 @@
     speakingText: "",
     bubbleTimer: 0,
     lastVotes: null,
+    voteResult: null,
+    defense: null,
+    nominated: null,
     report: "",
     reportKind: "info",
     murdererId: "",
@@ -132,6 +138,9 @@
     if (["nomination", "nominate", "vote", "voting", "提名投票", "提名", "投票"].includes(raw)) {
       return "nomination";
     }
+    if (["defense", "defence", "defending", "自辩", "辩护", "质证", "自辩质证"].includes(raw)) {
+      return "defense";
+    }
     if (["night", "夜晚", "夜间"].includes(raw)) {
       return "night";
     }
@@ -143,6 +152,9 @@
     }
     if (raw.includes("night") || raw.includes("夜")) {
       return "night";
+    }
+    if (raw.includes("defen") || raw.includes("自辩") || raw.includes("质证") || raw.includes("辩护")) {
+      return "defense";
     }
     if (raw.includes("nom") || raw.includes("vote") || raw.includes("提名")) {
       return "nomination";
@@ -365,6 +377,9 @@
       state.selectedId = null;
       state.nominationMode = false;
       state.lastVotes = null;
+      state.voteResult = null;
+      state.defense = null;
+      state.nominated = null;
       state.report = "";
       state.reportKind = "info";
       state.speakingId = null;
@@ -402,6 +417,7 @@
       dead: Array.isArray(data.dead) ? data.dead.slice() : (previous.dead || []),
       winner: data.winner !== undefined ? data.winner : (previous.winner === undefined ? null : previous.winner),
       message: typeof data.message === "string" ? data.message : (previous.message || ""),
+      reveal: data.reveal !== undefined ? data.reveal : (previous.reveal || null),
     };
 
     if (!state.game.phase) {
@@ -418,8 +434,13 @@
       state.nominationMode = false;
     }
 
-    if (previous.phase && state.game.phase !== previous.phase) {
-      clearBubble();
+    if (resultHasDefense(data)) {
+      state.defense = normalizeDefense(data.defense);
+      state.nominated = normalizeTarget(data.target) || state.nominated;
+      state.game.phase = "defense";
+    } else if (state.game.phase !== "defense") {
+      state.defense = null;
+      state.nominated = null;
     }
 
     captureReveal(data);
@@ -427,6 +448,46 @@
     if (typeof data.message === "string" && data.message) {
       showReport(data.message, data.winner ? "good" : "info");
     }
+  }
+
+  function resultHasDefense(data) {
+    return Boolean(data && data.defense && typeof data.defense === "object");
+  }
+
+  function normalizeTarget(raw) {
+    if (!raw) {
+      return null;
+    }
+    if (typeof raw === "string") {
+      const player = findPlayer(raw);
+      return { id: raw, name: player ? player.name : raw };
+    }
+    const id = idOf(raw);
+    if (!id) {
+      return null;
+    }
+    return {
+      id,
+      name: (raw && raw.name) || playerName(id),
+    };
+  }
+
+  function normalizeDefense(raw) {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    const speakerId = String(raw.speaker_id || raw.speakerId || raw.id || "");
+    const speakerName = String(raw.speaker_name || raw.speakerName || raw.name || "")
+      || (speakerId ? playerName(speakerId) : "");
+    const text = String(raw.text || raw.content || raw.line || "");
+    if (!speakerId && !speakerName && !text) {
+      return null;
+    }
+    return {
+      speaker_id: speakerId,
+      speaker_name: speakerName || "被提名者",
+      text,
+    };
   }
 
   function ensureYouPlayer() {
@@ -469,9 +530,12 @@
       data.murderer,
       data.culprit,
       data.murderer_id,
+      data.murderer_name,
       data.reveal && data.reveal.murderer,
       data.reveal && data.reveal.culprit,
       data.reveal && data.reveal.murderer_id,
+      data.reveal && data.reveal.murderer_name,
+      data.reveal && data.reveal.name,
     ];
     for (const candidate of candidates) {
       const id = idOf(candidate);
@@ -531,6 +595,7 @@
     renderHeader();
     renderSeats();
     appendLogEntries();
+    renderDefense();
     renderVoteBoard();
     renderActionBar();
     renderReport();
@@ -773,6 +838,14 @@
   function positionBubble(seatElement) {
     const stage = $("table-stage");
     const bubble = $("speech-bubble");
+    const isNarrow = window.matchMedia("(max-width: 820px)").matches;
+    bubble.classList.toggle("docked", isNarrow);
+    if (isNarrow) {
+      bubble.style.left = "";
+      bubble.style.top = "";
+      bubble.style.transform = "";
+      return;
+    }
     const stageRect = stage.getBoundingClientRect();
     const seatRect = seatElement.getBoundingClientRect();
     const centerX = seatRect.left - stageRect.left + seatRect.width / 2;
@@ -805,13 +878,6 @@
     updateSeatStates();
     renderActionBar();
     window.clearTimeout(state.bubbleTimer);
-    state.bubbleTimer = window.setTimeout(() => {
-      bubble.classList.add("hidden");
-      state.speakingId = null;
-      state.speakingText = "";
-      updateSeatStates();
-      renderActionBar();
-    }, 4600);
   }
 
   function clearBubble() {
@@ -821,37 +887,131 @@
     state.speakingText = "";
   }
 
+  function renderDefense() {
+    const card = $("defense-card");
+    const phase = currentPhase();
+    const nominated = state.nominated;
+    const defense = state.defense;
+    const active = Boolean(state.game) && phase === "defense" && nominated;
+    if (!active) {
+      card.classList.add("hidden");
+      return;
+    }
+    $("defense-target").textContent = `被提名：${nominated.name || playerName(nominated.id)}`;
+    $("defense-speaker").textContent = defense
+      ? `${defense.speaker_name} 开口`
+      : `${nominated.name || playerName(nominated.id)} 沉默`;
+    $("defense-text").textContent = (defense && defense.text)
+      || "被提名者没有立刻开口。桌上的目光都压了过来。";
+    card.classList.remove("hidden");
+  }
+
+  function voteTallyRows() {
+    const result = state.voteResult;
+    if (!result) {
+      return [];
+    }
+    const tally = [...(result.tally || [])].sort((left, right) => right.count - left.count);
+    if (tally.length) {
+      return tally;
+    }
+    const counts = new Map();
+    for (const vote of result.votes || []) {
+      counts.set(vote.targetId, (counts.get(vote.targetId) || 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([id, count]) => ({ id, count }))
+      .sort((left, right) => right.count - left.count);
+  }
+
   function renderVoteBoard() {
     const board = $("vote-board");
-    if (!state.game || !state.lastVotes) {
+    const result = state.voteResult;
+    const discussion = board.closest(".discussion");
+    if (discussion) {
+      discussion.classList.toggle("voting", Boolean(state.game && result));
+    }
+    if (!state.game || !result) {
       board.classList.add("hidden");
       board.textContent = "";
       return;
     }
-    const votes = state.lastVotes.votes || [];
-    const tally = [...(state.lastVotes.tally || [])].sort((left, right) => right.count - left.count);
+    const rows = voteTallyRows();
+    const votes = result.votes || [];
+    const threshold = result.threshold;
+    const topCount = rows.length ? rows[0].count : 0;
+    const short = Boolean(threshold) && topCount < threshold;
     board.textContent = "";
-    board.append(node("p", "vote-title", `第 ${state.lastVotes.day || state.game.day} 天 · 投票`));
-    if (tally.length) {
+    board.dataset.short = short ? "1" : "0";
+
+    const title = node("p", "vote-title");
+    title.append(node("span", "", `第 ${result.day || state.game.day} 天 · 投票`));
+    if (threshold) {
+      title.append(node("span", `vote-threshold${short ? " short" : ""}`, `${topCount} / ${threshold}`));
+    }
+    board.append(title);
+
+    if (rows.length) {
       const chips = node("div", "vote-tally");
-      for (const row of tally) {
-        if (!row.count) {
-          continue;
-        }
-        chips.append(node("span", "vote-chip", `${playerName(row.id)} ${row.count} 票`));
+      for (const row of rows) {
+        chips.append(node("span", `vote-chip${row.count >= (threshold || 99) ? " reached" : ""}`,
+          `${playerName(row.id)} ${row.count} 票`));
       }
       board.append(chips);
     }
+
+    const executedName = result.executedName || "";
+    const exec = node("div", `vote-exec ${executedName ? "is-executed" : "is-short"}`);
+    exec.append(node("span", "exec-stamp", executedName ? "处决" : "未决"));
+    exec.append(node("span", "exec-text", executedName
+      ? `${executedName} 被投票处决。`
+      : "票数不够，今晚无人被处决。"));
+    board.append(exec);
+
     if (votes.length) {
-      const grid = node("div", "vote-rows");
-      for (const vote of votes) {
-        grid.append(node("span", "vote-row", `${playerName(vote.voterId)} → ${playerName(vote.targetId)}`));
+      const groups = node("div", "vote-rows");
+      let rowIndex = 0;
+      const placed = new Set();
+      for (const tallyRow of rows) {
+        const group = node("div", "vote-group");
+        group.append(node("p", "vote-target",
+          `${playerName(tallyRow.id)} · ${tallyRow.count} 票`));
+        for (const vote of votes) {
+          if (vote.targetId !== tallyRow.id) {
+            continue;
+          }
+          group.append(buildVoteRow(vote, rowIndex));
+          rowIndex += 1;
+          placed.add(vote);
+        }
+        groups.append(group);
       }
-      board.append(grid);
+      for (const vote of votes) {
+        if (placed.has(vote)) {
+          continue;
+        }
+        groups.append(buildVoteRow(vote, rowIndex));
+        rowIndex += 1;
+      }
+      board.append(groups);
     }
-    const executed = state.lastVotes.executedName;
-    board.append(node("p", "vote-exec", executed ? `处决：${executed}` : "无人被处决。"));
+
+
     board.classList.remove("hidden");
+  }
+
+  function buildVoteRow(vote, index) {
+    const row = node("div", "vote-row");
+    row.style.animationDelay = `${Math.min(index, 8) * 90}ms`;
+    const line = node("span", "vote-arrow");
+    line.append(
+      node("span", "vote-voter", vote.voterName || playerName(vote.voterId)),
+      node("span", "vote-dash", "→"),
+      node("span", "vote-target-name", vote.targetName || playerName(vote.targetId)),
+    );
+    const reason = node("span", "vote-reason", vote.reason || "没有留下理由。");
+    row.append(line, reason);
+    return row;
   }
 
   function showReport(text, kind = "info") {
@@ -882,8 +1042,12 @@
     if (!youAlive()) {
       return "你已出局，只能旁观。点「继续观战」，让他们把这一夜走完。";
     }
+    if (phase === "defense") {
+      const target = state.nominated ? state.nominated.name : "被提名者";
+      return `「${target}」正在自辩。质证可以继续，看完再按「投票」。`;
+    }
     if (phase === "nomination") {
-      return "点选一名在场的人，再按「投票」确认。";
+      return "点选一名在场的人，再按「提名」进入自辩。";
     }
     if (phase === "night") {
       return youRole() === "murderer"
@@ -913,7 +1077,8 @@
       }
     }
 
-    const speakLocked = finished || state.busy || phase !== "discussion" || !alive || !state.game;
+    const speakLocked = finished || state.busy || !alive || !state.game
+      || (phase !== "discussion" && phase !== "defense");
     input.disabled = speakLocked;
     if (!state.game) {
       input.placeholder = "正在推开旅馆的门……";
@@ -921,13 +1086,17 @@
       input.placeholder = "本局已结束";
     } else if (!alive) {
       input.placeholder = "你已出局，正在观战";
+    } else if (phase === "defense") {
+      const target = state.nominated ? state.nominated.name : "被提名者";
+      input.placeholder = `质证「${target}」，或替自己辩一句`;
     } else if (phase === "nomination") {
-      input.placeholder = "提名阶段——先选人，再投票";
+      input.placeholder = "提名阶段——先选人，再提名";
     } else if (phase === "night") {
       input.placeholder = "灯已经熄了，等天亮再说";
     } else {
       input.placeholder = "对圆桌上的人说点什么";
     }
+    speakButton.textContent = phase === "defense" ? "质证" : "发言";
     speakButton.disabled = speakLocked || !input.value.trim();
 
     let secondaryText = "";
@@ -954,9 +1123,12 @@
     const selection = findPlayer(state.selectedId);
     if (state.game && !finished && alive) {
       if (phase === "nomination") {
-        primaryText = "投票";
+        primaryText = "提名";
         primaryVisible = true;
         primaryDisabled = primaryDisabled || !selection;
+      } else if (phase === "defense") {
+        primaryText = "投票";
+        primaryVisible = true;
       } else if (phase === "night") {
         if (role === "murderer") {
           primaryText = "动手";
@@ -990,8 +1162,11 @@
       } else {
         hallHint.textContent = `${playerName(state.speakingId)} 正开口。`;
       }
+    } else if (phase === "defense") {
+      const target = state.nominated ? state.nominated.name : "被提名者";
+      hallHint.textContent = `「${target}」被推到了桌前，先自辩，再投票。`;
     } else if (phase === "nomination") {
-      hallHint.textContent = "提名摆上了桌。点一位在场的人，把票投出去。";
+      hallHint.textContent = "提名摆上了桌。点一位在场的人，先听自辩。";
     } else if (phase === "night") {
       hallHint.textContent = "灯熄了。雪光从窗缝里漏进来。";
     } else if (phase === "ended") {
@@ -1009,6 +1184,21 @@
 
   function isMurdererWin() {
     return winnerLabel() === "凶手胜";
+  }
+
+  function inferredWinnerLabel() {
+    const label = winnerLabel();
+    if (label) {
+      return label;
+    }
+    const message = (state.game && state.game.message) || "";
+    if (message.includes("凶手胜") || message.includes("凶手还站着")) {
+      return "凶手胜";
+    }
+    if (message.includes("好人胜") || message.includes("凶手伏法")) {
+      return "好人胜";
+    }
+    return "";
   }
 
   function resolveRevealName() {
@@ -1032,10 +1222,21 @@
     if (youRole() === "murderer") {
       return displayName(youPlayer()) || "你";
     }
-    if (isVillagerWin() && state.lastVotes && state.lastVotes.executedName) {
+    if (state.voteResult && state.voteResult.executedName && isVillagerWin()) {
+      return state.voteResult.executedName;
+    }
+    if (state.lastVotes && state.lastVotes.executedName && isVillagerWin()) {
       return state.lastVotes.executedName;
     }
-    return "尚未揭晓";
+    return "终局揭晓";
+  }
+
+  function revealRoleLabel() {
+    const name = resolveRevealName();
+    if (!name || name === "终局揭晓") {
+      return "凶手 · 待卷宗封存";
+    }
+    return "凶手";
   }
 
   function renderEnd() {
@@ -1045,12 +1246,14 @@
       overlay.setAttribute("aria-hidden", "true");
       return;
     }
-    const result = isVillagerWin() ? "villagers" : (isMurdererWin() ? "murderer" : "unknown");
+    const winner = inferredWinnerLabel();
+    const result = winner === "好人胜" ? "villagers" : (winner === "凶手胜" ? "murderer" : "unknown");
     $("end-frame").dataset.result = result;
     $("end-kicker").textContent = result === "murderer" ? "NIGHTFALL · 结局" : "DAWN · 结局";
-    $("end-title").textContent = winnerLabel() || "结局已定";
+    $("end-title").textContent = winner || "天亮了";
     $("end-subtitle").textContent = (state.game && state.game.message) || "雪停了，真相留在了桌上。";
     $("end-murderer").textContent = resolveRevealName();
+    $("end-murderer-role").textContent = revealRoleLabel();
     const role = youRole();
     $("end-you").textContent = `你 · ${ROLE_LABEL[role] || "身份未知"}`;
     $("end-days").textContent = `${state.game ? state.game.day : 1} 天`;
@@ -1221,6 +1424,33 @@
     "我只信自己看见的。你说得再多，也得有人替你作证。",
   ];
 
+  const MOCK_DEFENSE_LINES = {
+    p1: "我管这一屋子的账，夜里查灯油是本分。你们要我认什么？",
+    p2: "账核过了，一分不差。拿不出凭据，就别把账房当凶手。",
+    p3: "我送完炭就下楼了，没在楼上多留一刻。",
+    p4: "我只信证据。没有证据就处决人，正合凶手的意。",
+    p5: "我在马厩二十年，谁从后门过我都看得见。说我，得拿出个说法。",
+  };
+
+  const MOCK_DEFENSE_REPLIES = [
+    "你要证据，可清白的人手里哪来的证据？",
+    "这桌上谁都有旧账，为什么偏挑今夜的我？",
+    "我问心无愧。你们若非要投我，那就投吧。",
+  ];
+
+  const MOCK_VOTE_REASONS = [
+    "「{target}」前后两句话对不上，我这一票压他。",
+    "他说的时辰和别人对不上，先请他下去说清楚。",
+    "{target} 一直在问别人，自己夜里在哪儿却讲不清。",
+    "我信不过 {target} 的鞋底——雪化了才回来。",
+    "众人都在看他，我也把话摆明：这一票给 {target}。",
+  ];
+
+  const MOCK_SAVE_REASONS = [
+    "{target} 的话更像真的，我不想跟着众人的票走。",
+    "比起 {target}，另一个人今夜更说不清。",
+  ];
+
   function shuffle(items) {
     const copy = items.slice();
     for (let index = copy.length - 1; index > 0; index -= 1) {
@@ -1242,6 +1472,7 @@
       return;
     }
     state.busy = true;
+    clearBubble();
     renderActionBar();
     try {
       await action();
@@ -1263,10 +1494,11 @@
       handleSpeak();
     });
     $("speak-input").addEventListener("input", () => {
+      const phase = currentPhase();
       $("speak-button").disabled = state.busy
         || !state.game
         || !youAlive()
-        || currentPhase() !== "discussion"
+        || (phase !== "discussion" && phase !== "defense")
         || !$("speak-input").value.trim();
     });
     $("primary-button").addEventListener("click", handlePrimary);
@@ -1311,6 +1543,16 @@
         closeDrawer();
       }
     });
+    window.addEventListener("resize", () => {
+      if (!state.speakingId) {
+        return;
+      }
+      const seat = [...document.querySelectorAll(".seat")]
+        .find((item) => item.dataset.playerId === state.speakingId);
+      if (seat) {
+        positionBubble(seat);
+      }
+    });
   }
 
   async function createRealGame() {
@@ -1335,7 +1577,19 @@
     }
     try {
       const data = await apiRequest(`${API}/games/${state.gameId}`);
+      const report = state.report;
+      const reportKind = state.reportKind;
+      const defense = state.defense;
+      const nominated = state.nominated;
+      const heldDefense = Boolean(defense && nominated);
       applyGame(data);
+      if (heldDefense && normalizePhase(state.game && state.game.phase) === "discussion") {
+        state.game.phase = "defense";
+        state.defense = defense;
+        state.nominated = nominated;
+      }
+      state.report = report;
+      state.reportKind = reportKind;
       render();
     } catch (error) {
       return;
@@ -1389,7 +1643,7 @@
       showToast("你已出局，不能再发言。", "warn");
       return;
     }
-    if (currentPhase() !== "discussion") {
+    if (currentPhase() !== "discussion" && currentPhase() !== "defense") {
       showToast("现在不是发言的时机。", "warn");
       return;
     }
@@ -1451,48 +1705,128 @@
     }
   }
 
-  function handleNominationResult(result, targetId) {
+  async function doVote(targetId) {
+    let result;
+    if (state.mock) {
+      result = mockVote();
+    } else {
+      result = await apiRequest(`${API}/games/${state.gameId}/vote`, {
+        method: "POST",
+        body: { target_id: targetId },
+      });
+    }
+    handleVoteResult(result);
+    if (!state.mock) {
+      await refreshReal();
+    }
+  }
+
+  function handleNominationResult(result, fallbackTargetId) {
     state.nominationMode = false;
     state.selectedId = null;
     closeConfirm();
 
-    const votes = normalizeVotes(result && result.votes);
-    const tally = normalizeTally(result && result.tally);
-    const executedId = idOf(result && result.executed);
-    let executedName = nameOf(result && result.executed);
-    if (!executedName && executedId) {
-      executedName = playerName(executedId);
+    if (resultHasDefense(result)) {
+      const target = normalizeTarget(result && result.target)
+        || normalizeTarget(fallbackTargetId)
+        || state.nominated;
+      const defense = normalizeDefense(result && result.defense) || {
+        speaker_id: target ? target.id : "",
+        speaker_name: target ? target.name : "被提名者",
+        text: "",
+      };
+      applyGame({ ...(result || {}), phase: "defense", defense, target });
+      if (state.game) {
+        state.game.phase = "defense";
+      }
+      state.defense = defense;
+      state.nominated = target;
+      const name = target ? target.name : defense.speaker_name;
+      showReport(`${name} 被提名上桌。先听自辩，质证完再投票。`, "warn");
+      render();
+      return;
     }
 
-    state.lastVotes = {
+    handleVoteResult(result);
+  }
+
+  function tallyFromVotes(votes) {
+    const counts = new Map();
+    for (const vote of votes || []) {
+      counts.set(vote.targetId, (counts.get(vote.targetId) || 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([id, count]) => ({ id, count }))
+      .sort((left, right) => right.count - left.count);
+  }
+
+  function handleVoteResult(result) {
+    const votes = normalizeVotes(result && result.votes);
+    let tally = normalizeTally(result && result.tally);
+    if (!tally.length) {
+      tally = tallyFromVotes(votes);
+    }
+    const aliveCount = players().filter((player) => player.alive !== false).length;
+    const threshold = Number(result && result.threshold)
+      || Math.floor(aliveCount / 2) + 1;
+    const executedId = idOf(result && result.executed);
+    const executedName = nameOf(result && result.executed)
+      || (executedId ? playerName(executedId) : "");
+    state.voteResult = {
       votes,
       tally,
+      threshold,
       executedId,
       executedName,
       day: state.game ? state.game.day : 1,
     };
+    state.lastVotes = state.voteResult;
+    state.nominationMode = false;
+    state.selectedId = null;
 
     if (executedId) {
       markDead(executedId);
     }
-    applyGame(result);
-    if (executedId) {
-      markDead(executedId);
+    const payload = { ...(result || {}) };
+    if (!payload.phase && !payload.winner) {
+      payload.phase = "night";
     }
-    if (!result || (!result.phase && !result.winner)) {
-      if (!isFinished() && state.game) {
-        state.game.phase = "night";
-      }
+    applyGame(payload);
+    if (state.game) {
+      state.game.phase = normalizePhase(payload.phase) || "night";
+    }
+    state.defense = null;
+    state.nominated = null;
+    if (payload.reveal) {
+      captureReveal(payload);
     }
 
     const message = (result && result.message)
-      || (executedName ? `${executedName} 被处决。` : "票数不够，没有人被处决。");
+      || (executedName ? `${executedName} 被处决，天黑了。` : "票数不够，今晚无人被处决。");
     showReport(message, executedName ? "warn" : "info");
 
-    if (executedId && executedId === youId()) {
-      showToast("你已出局，转入观战。", "warn", 4400);
+    if (executedId === youId()) {
+      showToast("票落在你头上。你已出局。", "warn", 4600);
+    } else if (executedName) {
+      showToast(`处决：${executedName}。天黑了。`, "warn", 3600);
     }
+
     render();
+    if (executedId) {
+      flashExecuted(executedId);
+    }
+  }
+
+  function flashExecuted(playerId) {
+    const seat = [...document.querySelectorAll(".seat")]
+      .find((item) => item.dataset.playerId === playerId);
+    if (!seat) {
+      return;
+    }
+    seat.classList.remove("just-executed");
+    void seat.offsetWidth;
+    seat.classList.add("just-executed");
+    window.setTimeout(() => seat.classList.remove("just-executed"), 1900);
   }
 
   async function doNight(targetId) {
@@ -1520,25 +1854,31 @@
     if (killedId) {
       markDead(killedId);
     }
-    applyGame(result);
+    const payload = { ...(result || {}) };
+    if (!payload.phase && !payload.winner) {
+      payload.phase = "discussion";
+    }
+    applyGame(payload);
     if (killedId) {
       markDead(killedId);
     }
     state.selectedId = null;
     state.nominationMode = false;
     state.lastVotes = null;
-    if (!result || (!result.phase && !result.winner)) {
-      if (!isFinished() && state.game) {
-        state.game.phase = "discussion";
-      }
+    state.voteResult = null;
+    state.defense = null;
+    state.nominated = null;
+    if (payload.reveal) {
+      captureReveal(payload);
     }
 
-    const message = (result && result.message)
-      || (killedName ? `天亮了，${killedName} 没有从房间里出来。` : "天亮了，没有人死。");
-    showReport(message, killedName ? "warn" : "info");
-    if (killedId && killedId === youId()) {
-      showToast("天亮了，你已出局，转入观战。", "warn", 4600);
 
+    const message = killedName
+      ? (killedName === "你" ? "天亮时，你没有下楼。" : `天亮时，${killedName} 没有下楼。`)
+      : ((result && result.message) || "天亮了，没有人死。");
+    showReport(message, killedName ? "warn" : "info");
+    if (killedId === youId()) {
+      showToast("你没能熬到天亮。终局揭晓。", "warn", 5200);
     }
     render();
   }
@@ -1556,7 +1896,18 @@
           const targetId = idOf(
             vote.target_id || vote.targetId || vote.to_id || vote.to || vote.choice || vote.target,
           );
-          return voterId && targetId ? { voterId, targetId } : null;
+          if (!voterId || !targetId) {
+            return null;
+          }
+          return {
+            voterId,
+            voterName: String(vote.voter_name || vote.voterName || "")
+              || playerName(voterId),
+            targetId,
+            targetName: String(vote.target_name || vote.targetName || "")
+              || playerName(targetId),
+            reason: String(vote.reason || vote.why || vote.rationale || ""),
+          };
         })
         .filter(Boolean);
     }
@@ -1564,7 +1915,9 @@
       return Object.entries(raw)
         .map(([voterId, value]) => {
           const targetId = typeof value === "string" ? value : idOf(value);
-          return targetId ? { voterId, targetId } : null;
+          return targetId
+            ? { voterId, voterName: playerName(voterId), targetId, targetName: playerName(targetId), reason: "" }
+            : null;
         })
         .filter(Boolean);
     }
@@ -1636,6 +1989,13 @@
       await doNominate(target.id);
       return;
     }
+    if (phase === "defense") {
+      if (!state.nominated) {
+        throw new Error("桌上没有正在自辩的人。");
+      }
+      await doVote(state.nominated.id);
+      return;
+    }
     if (phase === "night") {
       await doNight(null);
     }
@@ -1684,7 +2044,19 @@
         showToast("先点一位在场的人。", "warn");
         return;
       }
-      openConfirm(`把票投给「${displayName(target)}」？`, "确认投票", () => doNominate(target.id));
+      openConfirm(
+        `提名「${displayName(target)}」，先听自辩再投票？`,
+        "确认提名",
+        () => doNominate(target.id),
+      );
+      return;
+    }
+    if (phase === "defense") {
+      if (!state.nominated) {
+        showToast("桌上没有正在自辩的人。", "warn");
+        return;
+      }
+      runAction(() => doVote(state.nominated.id));
       return;
     }
     if (phase === "night") {
@@ -1720,6 +2092,10 @@
     state.selectedId = null;
     state.nominationMode = false;
     state.lastVotes = null;
+    state.voteResult = null;
+    state.defense = null;
+    state.nominated = null;
+    state.mockVotesCast = 0;
     state.report = "";
     state.reportKind = "info";
     state.revealName = "";
@@ -1745,13 +2121,17 @@
   }
 
   function mockCreate() {
-    const youMurderer = Math.random() < 0.38;
-    const murderer = youMurderer ? "p0" : randomOf(MOCK_AGENTS).id;
+    const forcedVillager = state.mockCase === "you-die" || state.mockCase === "short";
+    const youMurderer = forcedVillager ? false : Math.random() < 0.38;
+    const murderer = youMurderer
+      ? "p0"
+      : (state.mockCase ? "p5" : randomOf(MOCK_AGENTS).id);
     state.murdererId = murderer;
     state.murdererName = murderer === "p0"
       ? "你"
       : ((MOCK_AGENTS.find((agent) => agent.id === murderer) || {}).name || "未知");
     state.revealName = "";
+    state.mockVotesCast = 0;
 
     const players = [
       { id: "p0", name: "你", public: "封山夜最后一位住客", alive: true, is_you: true },
@@ -1846,6 +2226,7 @@
 
   function mockSpeak(text) {
     const log = state.game.public_log;
+    const inDefense = normalizePhase(state.game.phase) === "defense";
     log.push({
       seq: nextSeq(log),
       speaker_id: "p0",
@@ -1853,16 +2234,24 @@
       text,
       day: state.game.day,
     });
-    const speakers = shuffle(mockAlive().filter((player) => !player.is_you)).slice(0, 2);
+    let speakers;
+    if (inDefense && state.nominated) {
+      const nominated = findPlayer(state.nominated.id);
+      speakers = nominated && nominated.alive !== false
+        ? [nominated]
+        : shuffle(mockAlive().filter((player) => !player.is_you)).slice(0, 1);
+    } else {
+      speakers = shuffle(mockAlive().filter((player) => !player.is_you)).slice(0, 2);
+    }
     const replies = speakers.map((agent) => ({
       seq: nextSeq(log),
       speaker_id: agent.id,
       speaker_name: agent.name,
-      text: mockReply(agent),
+      text: inDefense ? randomOf(MOCK_DEFENSE_REPLIES) : mockReply(agent),
       day: state.game.day,
     }));
     log.push(...replies);
-    return { replies, public_log: log.slice(), phase: "discussion" };
+    return { replies, public_log: log.slice(), phase: state.game.phase || "discussion" };
   }
 
   function mockNominate(targetId) {
@@ -1870,54 +2259,105 @@
     if (!target || target.alive === false) {
       throw new Error("那不在桌上了。");
     }
+    const text = MOCK_DEFENSE_LINES[target.id] || "该说的我都说过了。再问，我也只有这句话。";
+    const defense = {
+      speaker_id: target.id,
+      speaker_name: target.name,
+      text,
+    };
+    const log = state.game.public_log;
+    log.push({
+      seq: nextSeq(log),
+      speaker_id: target.id,
+      speaker_name: target.name,
+      text,
+      day: state.game.day,
+    });
+    return {
+      phase: "defense",
+      target: { id: target.id, name: target.name },
+      defense,
+      public_log: log.slice(),
+    };
+  }
+
+  function mockVote() {
+    const nominated = state.nominated || normalizeTarget(state.selectedId);
+    if (!nominated) {
+      throw new Error("桌上没有正在自辩的人。");
+    }
+    const target = findPlayer(nominated.id);
+    if (!target || target.alive === false) {
+      throw new Error("那不在桌上了。");
+    }
     const alive = mockAlive();
+    const threshold = Math.floor(alive.length / 2) + 1;
+    const sameTarget = alive.find((player) => player.id !== target.id && player.id !== youId());
+    const secondOther = alive.find((player) => player.id !== target.id
+      && player.id !== youId() && player.id !== (sameTarget && sameTarget.id))
+      || target;
+    const thirdOther = alive.find((player) => player.id !== target.id
+      && player.id !== youId()
+      && player.id !== (sameTarget && sameTarget.id)
+      && player.id !== (secondOther && secondOther.id))
+      || secondOther;
     const votes = [];
-    const tally = {};
-    for (const voter of alive) {
-      let chosen = "";
-      if (voter.is_you) {
-        chosen = target.id;
-      } else {
-        const others = alive.filter((player) => player.id !== voter.id);
-        if (voter.id === state.murdererId) {
-          const safe = others.filter((player) => player.id !== state.murdererId);
-          chosen = (randomOf(safe.length ? safe : others) || target).id;
-        } else if (Math.random() < 0.55) {
-          chosen = target.id;
-        } else {
-          chosen = (randomOf(others) || target).id;
-        }
+    const shortCase = (state.mockCase === "short" || state.mockCase === "you-die")
+      && state.mockVotesCast === 0;
+    const executeCase = state.mockCase === "execute" && state.mockVotesCast === 0;
+    const agents = alive.filter((player) => !player.is_you);
+    agents.forEach((voter, index) => {
+      let chosen = target;
+      if (executeCase) {
+        chosen = voter.id === target.id ? (sameTarget || target) : target;
+      } else if (shortCase) {
+        const plan = [sameTarget, target, target, secondOther, thirdOther];
+        chosen = plan[index] || secondOther || target;
+      } else if (voter.id === state.murdererId) {
+        const safe = alive.filter((player) => player.id !== voter.id && player.id !== target.id);
+        chosen = randomOf(safe.length ? safe : alive.filter((player) => player.id !== voter.id)) || secondOther;
+      } else if (Math.random() > 0.7) {
+        const others = alive.filter((player) => player.id !== voter.id && player.id !== target.id);
+        chosen = randomOf(others) || sameTarget || target;
       }
-      tally[chosen] = (tally[chosen] || 0) + 1;
       votes.push({
         voter_id: voter.id,
         voter_name: voter.name,
-        target_id: chosen,
-        target_name: playerName(chosen),
+        target_id: chosen.id,
+        target_name: chosen.name,
+        reason: voteReason(chosen, target, shortCase),
       });
+    });
+    votes.push({
+      voter_id: youId(),
+      voter_name: "你",
+      target_id: target.id,
+      target_name: target.name,
+      reason: `「${target.name}」的自辩没有把我的疑问说清，这一票给他。`,
+    });
+    const tally = {};
+    for (const vote of votes) {
+      tally[vote.target_id] = (tally[vote.target_id] || 0) + 1;
     }
     const ranking = Object.entries(tally).sort((left, right) => right[1] - left[1]);
-    let executedId = "";
-    if (ranking.length && ranking[0][1] > alive.length / 2) {
-      executedId = ranking[0][0];
-    }
-    let executedName = "";
+    const executedId = ranking.length && ranking[0][1] >= threshold ? ranking[0][0] : "";
+    const executedName = executedId ? playerName(executedId) : "";
     if (executedId) {
-      executedName = playerName(executedId);
       markMockDead(executedId);
     }
+    state.mockVotesCast += 1;
+    const murderer = findPlayer(state.murdererId);
     let winner = null;
     if (executedId === state.murdererId) {
       winner = "villagers";
-    } else {
-      const murderer = findPlayer(state.murdererId);
-      if (mockAlive().length <= 2 && murderer && murderer.alive !== false) {
-        winner = "murderer";
-      }
+    } else if (executedId === youId() || (murderer && murderer.alive === false)) {
+      winner = "murderer";
+    } else if (mockAlive().length <= 2 && murderer && murderer.alive !== false) {
+      winner = "murderer";
     }
     const message = executedId
-      ? `${executedName} 被众人投票处决。`
-      : "票数不够，没有人被处决。";
+      ? `${executedName} 被投票处决，天黑了。`
+      : "票数不够，今晚无人被处决。";
     const phase = winner ? "ended" : "night";
     const log = state.game.public_log;
     log.push({
@@ -1930,50 +2370,82 @@
     return {
       votes,
       tally,
-      executed: executedId || null,
+      threshold,
+      executed: executedId ? { id: executedId, name: executedName } : null,
       winner,
+      reveal: winner ? mockReveal() : null,
       message,
       public_log: log.slice(),
       phase,
     };
   }
 
+  function voteReason(chosen, nominated, shortCase) {
+    if (chosen.id === nominated.id) {
+      return randomOf(MOCK_VOTE_REASONS).replace("{target}", nominated.name);
+    }
+    const template = randomOf(MOCK_SAVE_REASONS);
+    return template.replace("{target}", chosen.name) + (shortCase ? "我还没想好要不要跟票。" : "");
+  }
+
+  function mockReveal() {
+    return {
+      murderer_id: state.murdererId,
+      murderer_name: state.murdererName,
+    };
+  }
+
   function mockNight(targetId) {
     const youMurderer = state.murdererId === "p0";
+    const forceYouDie = state.mockCase === "you-die";
+    const forceAgentDie = state.mockCase === "short" && !youMurderer;
     let killedId = "";
+    let killedName = "";
     if (youMurderer) {
       const target = findPlayer(targetId);
       if (!target || target.alive === false || target.is_you) {
         throw new Error("请选择一名在场的目标。");
       }
       killedId = target.id;
-    } else if (Math.random() < 0.85) {
+      killedName = target.name;
+    } else if (forceYouDie || forceAgentDie || Math.random() < 0.85) {
       const murderer = findPlayer(state.murdererId);
       if (murderer && murderer.alive !== false) {
         const pool = mockAlive().filter((player) => player.id !== state.murdererId);
         const youTicket = pool.find((player) => player.is_you);
-        const victim = youTicket && Math.random() < 0.45 ? youTicket : randomOf(pool);
-        killedId = victim ? victim.id : "";
+        const agentPool = pool.filter((player) => !player.is_you);
+        let victim;
+        if (forceYouDie && youTicket) {
+          victim = youTicket;
+        } else if (forceAgentDie && agentPool.length) {
+          victim = randomOf(agentPool);
+        } else {
+          victim = youTicket && Math.random() < 0.45 ? youTicket : randomOf(pool);
+        }
+        if (victim) {
+          killedId = victim.id;
+          killedName = victim.name;
+        }
       }
     }
     if (killedId) {
       markMockDead(killedId);
     }
 
-    let winner = null;
     const murderer = findPlayer(state.murdererId);
+    let winner = null;
     if (murderer && murderer.alive === false) {
       winner = "villagers";
-    } else if (mockAlive().length <= 2) {
+    } else if (killedId === youId() || mockAlive().length <= 2) {
       winner = "murderer";
     }
 
     const day = winner ? state.game.day : state.game.day + 1;
     const phase = winner ? "ended" : "discussion";
     state.game.day = day;
-    const message = killedId
-      ? `天亮了。${playerName(killedId)} 没能从房间里出来。`
-      : "天亮了，没有人死。雪把脚印盖住了。";
+    const message = killedName
+      ? `天亮时，${killedName} 没有下楼。`
+      : "天亮时，没有人死。雪把脚印盖住了。";
     const log = state.game.public_log;
     log.push({
       seq: nextSeq(log),
@@ -1982,7 +2454,15 @@
       text: message,
       day,
     });
-    return { killed: killedId || null, day, phase, winner, message, public_log: log.slice() };
+    return {
+      killed: killedId ? { id: killedId, name: killedName } : null,
+      day,
+      phase,
+      winner,
+      reveal: winner ? mockReveal() : null,
+      message,
+      public_log: log.slice(),
+    };
   }
 
   function markMockDead(id) {
