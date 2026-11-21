@@ -595,24 +595,35 @@ def test_present_c03_to_r3_answers_f07(
     assert outcome.decision.fact_id == "f07"
 
 
-def test_present_falls_back_when_npc_does_not_hold_clue_fact(
+def test_present_clue_without_source_fact_evades(
     store: GameStore,
     script: Script,
 ) -> None:
     state = store.start(script)
     ask(store, state.game_id, "r2", "23:05 楼梯口碰见谁", FakeLLM())
-    ask(store, state.game_id, "r3", "那晚你看见什么", FakeLLM())
+    previous = ask(store, state.game_id, "r3", "那晚你看见什么", FakeLLM())
+    assert previous.decision is not None
+    previous_fact_id = previous.decision.fact_id
+    assert previous_fact_id is not None
+    previous_fact = next(
+        fact for fact in script.facts if fact.id == previous_fact_id
+    )
+    llm = FakeLLM()
 
     outcome = present_clue(
         store,
         state.game_id,
         "r3",
         "c02",
-        FakeLLM(),
+        llm,
     )
 
     assert outcome.ok is True
+    assert outcome.action == "evade"
     assert outcome.decision is not None
-    assert outcome.decision.fact_id == "f05"
-    assert outcome.decision.fact_id != "f06"
+    assert outcome.decision.fact_id is None
+    assert outcome.reply != previous_fact.text
+    assert previous_fact.text not in (outcome.reply or "")
+    assert "物证" in llm.calls[-1][1]
+    assert "不认识" in llm.calls[-1][1]
     assert state.last_questions["r3"] == "那晚你看见什么"

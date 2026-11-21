@@ -388,6 +388,25 @@ def test_clue_prompt_contains_evidence(script: Script) -> None:
     assert "仍受当前动作约束" in prompt
 
 
+def test_clue_only_evade_prompt_asks_about_the_object(script: Script) -> None:
+    decision = Decision(
+        action="evade",
+        fact_id=None,
+        content=None,
+        is_lie=False,
+        risk=0.0,
+    )
+    clue = _clue(script, "c02")
+
+    prompt = build_user_prompt(decision, None, clue)
+
+    assert "不认识" in prompt
+    assert "没见过" in prompt
+    assert clue.name in prompt
+    assert clue.desc in prompt
+    assert "物证" in prompt
+
+
 def test_plain_prompt_has_no_evidence(script: Script) -> None:
     fact = _fact(script, "f02")
     role = _role(script, "r3")

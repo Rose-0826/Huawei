@@ -41,10 +41,28 @@ def client(
     return TestClient(create_app(script, GameStore()))
 
 
+@pytest.fixture
+def client_with_store(
+    script: Script,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[TestClient, GameStore]:
+    monkeypatch.setenv("MOCK_LLM", "1")
+    for name in ("MAAS_API_KEY", "MAAS_ENDPOINT", "MAAS_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    store = GameStore()
+    return TestClient(create_app(script, store)), store
+
+
 def _start(client: TestClient) -> str:
     response = client.post("/games")
     assert response.status_code == 200
     return response.json()["game_id"]
+
+
+def _unlock(store: GameStore, game_id: str, *clue_ids: str) -> None:
+    state = store.get(game_id)
+    assert state is not None
+    state.unlocked_clue_ids.extend(clue_ids)
 
 
 def test_start_and_state_are_public(client: TestClient) -> None:
@@ -280,6 +298,7 @@ def test_accuse_returns_timeline_and_missed_ids(client: TestClient) -> None:
         "f15",
         "f16",
     }
+    assert all(fact["text"] == "" for fact in data["timeline"])
     assert "culprit" not in data
     assert "secret" not in response.text
 
@@ -307,6 +326,7 @@ def test_accuse_wrong_suspect(client: TestClient, script: Script) -> None:
     assert data["correct"] is False
     assert [fact["fact_id"] for fact in data["timeline"]] == script.solution_path
     assert set(data["missed_fact_ids"]) == set(script.solution_path)
+    assert all(fact["text"] == "" for fact in data["timeline"])
 
 def test_frontend_is_served(client: TestClient) -> None:
     response = client.get("/")
@@ -335,3 +355,227 @@ def test_script_path_env_selects_script(
 
     assert response.status_code == 200
     assert response.json()["title"] == "雾镇旅馆·副本"
+
+def test_combine_returns_inference_and_pressure(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    _unlock(store, game_id, "c01", "c02")
+
+    response = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c02"]},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert set(data) == {"title", "text", "pressure", "remaining"}
+    assert data["title"] == "时间线钉板"
+    assert "23:00" in data["text"]
+    assert "23:05" in data["text"]
+    assert data["pressure"]["r1"] == pytest.approx(0.1)
+    assert data["remaining"] == 2
+
+    state = client.get(f"/games/{game_id}").json()
+    assert state["pressure"]["r1"] == pytest.approx(0.1)
+    assert [clue["id"] for clue in state["clues"]] == ["c01", "c02"]
+
+
+def test_combine_reverse_order_and_duplicate_pair(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    _unlock(store, game_id, "c01", "c02")
+
+    first = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c02", "c01"]},
+    )
+    second = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c02"]},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"] == "这两张物证已经对撞过了"
+
+
+def test_combine_limit_blocks_fourth_pair(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    _unlock(
+        store,
+        game_id,
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c06",
+        "c07",
+        "c08",
+    )
+
+    for pair in (["c01", "c02"], ["c03", "c04"], ["c05", "c06"]):
+        assert (
+            client.post(
+                f"/games/{game_id}/combine",
+                json={"clue_ids": pair},
+            ).status_code
+            == 200
+        )
+
+    fourth = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c04", "c08"]},
+    )
+
+    assert fourth.status_code == 409
+    assert fourth.json()["detail"] == "本局的对撞次数已经用完"
+
+
+def test_combine_locked_clue_returns_409(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    _unlock(store, game_id, "c02")
+
+    response = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c02"]},
+    )
+
+    assert response.status_code == 409
+    assert "还没有解锁" in response.json()["detail"]
+
+
+def test_combine_pair_without_rule_returns_422(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    _unlock(store, game_id, "c01", "c03")
+
+    response = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c03"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "这两张物证对不上"
+
+
+def test_combine_input_errors(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    _unlock(store, game_id, "c01")
+
+    one = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01"]},
+    )
+    same = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c01"]},
+    )
+    unknown = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c99"]},
+    )
+    missing = client.post(
+        "/games/missing/combine",
+        json={"clue_ids": ["c01", "c02"]},
+    )
+
+    assert one.status_code == 422
+    assert one.json()["detail"] == "对撞需要两张不同的物证"
+    assert same.status_code == 422
+    assert same.json()["detail"] == "对撞需要两张不同的物证"
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "找不到这张线索"
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "找不到这一局"
+
+
+def test_combine_after_accuse_returns_409(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    _unlock(store, game_id, "c01", "c02")
+    client.post(f"/games/{game_id}/accuse", json={"suspect_id": "r1"})
+
+    response = client.post(
+        f"/games/{game_id}/combine",
+        json={"clue_ids": ["c01", "c02"]},
+    )
+
+    assert response.status_code == 409
+    assert "本局已经结束" in response.json()["detail"]
+
+
+def test_present_clue_to_uninformed_npc_does_not_repeat_last_answer(
+    client_with_store: tuple[TestClient, GameStore],
+    script: Script,
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    client.post(
+        f"/games/{game_id}/ask",
+        json={"npc_id": "r1", "question": "23:05 楼梯口碰见谁"},
+    )
+    client.post(
+        f"/games/{game_id}/ask",
+        json={"npc_id": "r3", "question": "那晚你看见什么"},
+    )
+    previous = next(fact for fact in script.facts if fact.id == "f05")
+
+    response = client.post(
+        f"/games/{game_id}/clues",
+        json={"npc_id": "r3", "clue_id": "c02"},
+    )
+
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert reply
+    assert reply != previous.text
+    assert "23:00" not in reply
+    state = store.get(game_id)
+    assert state is not None
+    assert state.pressure["r3"] == pytest.approx(0.25)
+
+
+def test_accuse_masks_undisclosed_timeline_text(
+    client_with_store: tuple[TestClient, GameStore],
+) -> None:
+    client, store = client_with_store
+    game_id = _start(client)
+    client.post(
+        f"/games/{game_id}/ask",
+        json={"npc_id": "r1", "question": "23:05 楼梯口碰见谁"},
+    )
+    state = store.get(game_id)
+    assert state is not None
+    assert "f06" in state.disclosed_fact_ids
+
+    response = client.post(
+        f"/games/{game_id}/accuse",
+        json={"suspect_id": "r1"},
+    )
+
+    assert response.status_code == 200
+    texts = {
+        fact["fact_id"]: fact["text"]
+        for fact in response.json()["timeline"]
+    }
+    assert texts["f06"]
+    for fact_id in ("f05", "f08", "f15", "f16"):
+        assert texts[fact_id] == ""

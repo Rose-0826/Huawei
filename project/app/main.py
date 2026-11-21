@@ -12,12 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import MAX_QUESTION_CHARS
 from app.game import (
     AskOutcome,
-
+    CombineOutcome,
     GameStore,
     GameView,
     ask,
     accuse,
     build_view,
+    combine,
     confront,
     get_view,
     present_clue,
@@ -94,6 +95,21 @@ class PresentClueRequest(APIModel):
     clue_id: str = Field(min_length=1)
 
 
+class CombineRequest(APIModel):
+    """线索对撞请求：两张物证 id。"""
+
+    clue_ids: list[str]
+
+
+class CombineResponse(APIModel):
+    """线索对撞结果：新推断、受压角色与剩余次数。"""
+
+    title: str
+    text: str
+    pressure: dict[str, float]
+    remaining: int
+
+
 class ConfrontRequest(APIModel):
     """对质请求：两个不同角色与同一个问题。"""
 
@@ -143,14 +159,17 @@ GAME_ERRORS: dict[str, tuple[int, str]] = {
     "game_not_found": (404, "找不到这一局"),
     "npc_not_found": (404, "找不到这个角色"),
     "clue_not_found": (404, "找不到这张线索"),
-    "clue_not_unlocked": (409, "这张线索还没有解锁，不能出示"),
+    "clue_not_unlocked": (409, "这张线索还没有解锁，还不能使用"),
     "clue_already_presented": (409, "这张线索你已经给他看过了"),
     "no_question_asked": (409, "还没有向这个角色提问，无法让他重新回答"),
     "game_ended": (409, "本局已经结束，请开始新的一局"),
     "empty_question": (422, "问题不能为空"),
     "question_too_long": (422, f"问题不能超过 {MAX_QUESTION_CHARS} 字"),
     "confront_needs_two": (422, "对质需要两个不同的人"),
-
+    "combine_needs_two": (422, "对撞需要两张不同的物证"),
+    "combine_not_found": (422, "这两张物证对不上"),
+    "combine_already_used": (409, "这两张物证已经对撞过了"),
+    "combine_limit_reached": (409, "本局的对撞次数已经用完"),
     "confront_failed": (500, "两人的回答没有形成可比的口径"),
 }
 
@@ -190,7 +209,7 @@ def create_app(
         game_id: str,
         request: PresentClueRequest,
     ) -> AskResponse:
-        """出示已解锁线索，提升压力并立即重答上一问。"""
+        """出示已解锁线索，提升压力并返回针对物证的回应。"""
         outcome = present_clue(
             game_store,
             game_id,
@@ -199,6 +218,24 @@ def create_app(
         )
         _raise_error(outcome.error)
         return _ask_public(outcome)
+
+    @application.post(
+        "/games/{game_id}/combine",
+        response_model=CombineResponse,
+    )
+    def combine_clues(
+        game_id: str,
+        request: CombineRequest,
+    ) -> CombineResponse:
+        """把两张已解锁物证对撞成一条新推断，并提升相关角色压力。"""
+        outcome = combine(game_store, game_id, tuple(request.clue_ids))
+        _raise_error(outcome.error)
+        return CombineResponse(
+            title=outcome.title or "",
+            text=outcome.text or "",
+            pressure=dict(outcome.pressure),
+            remaining=outcome.remaining,
+        )
 
     @application.post(
         "/games/{game_id}/confront",
@@ -254,10 +291,14 @@ def create_app(
         """指认凶手，返回命中结果、真相时间线与漏掉的事实 id。"""
         outcome = accuse(game_store, game_id, request.suspect_id)
         _raise_error(outcome.error)
+        missed = set(outcome.missed_fact_ids)
         return AccuseResponse(
             correct=outcome.correct,
             timeline=[
-                TruthFact(fact_id=fact.id, text=fact.text)
+                TruthFact(
+                    fact_id=fact.id,
+                    text="" if fact.id in missed else fact.text,
+                )
                 for fact in outcome.timeline
             ],
             missed_fact_ids=list(outcome.missed_fact_ids),

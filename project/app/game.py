@@ -7,10 +7,12 @@ from dataclasses import dataclass, field
 
 from app.config import (
     CONFRONT_PRESSURE,
+    MAX_COMBINE_PER_GAME,
     MAX_PRESSURE,
     MAX_QUESTION_CHARS,
     PRESSURE_PER_CLUE,
 )
+from app.engine.combine import find_rule
 from app.engine.composer import compose
 from app.engine.confront import Alignment, Statement, compare_testimony
 from app.engine.intent import parse_intent
@@ -36,6 +38,8 @@ class GameState:
     answered_fact_ids: dict[str, list[str]] = field(default_factory=dict)
     ended: bool = False
     accusation: AccusationOutcome | None = None
+    combine_pairs: set[tuple[str, str]] = field(default_factory=set)
+    combine_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,18 @@ class AccusationOutcome:
     correct: bool
     timeline: tuple[Fact, ...]
     missed_fact_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CombineOutcome:
+    """一次线索对撞的结果：新推断、受压角色与剩余次数。"""
+
+    ok: bool
+    error: str | None
+    title: str | None
+    text: str | None
+    pressure: dict[str, float] = field(default_factory=dict)
+    remaining: int = MAX_COMBINE_PER_GAME
 
 
 @dataclass(frozen=True)
@@ -183,7 +199,7 @@ def present_clue(
     clue_id: str,
     llm: LLMClient | None = None,
 ) -> AskOutcome:
-    """出示已解锁线索，增加压力并优先按线索对应事实重答。"""
+    """出示已解锁线索：持有来源事实时重答，否则只针对物证回避。"""
     state = store.get(game_id)
     if state is None:
         return _ask_error("game_not_found")
@@ -222,6 +238,62 @@ def present_clue(
         clue=clue,
         exclude_answered=False,
         fact_override=fact_override,
+        clue_only=fact_override is None,
+    )
+
+
+def combine(
+    store: GameStore,
+    game_id: str,
+    clue_ids: tuple[str, ...],
+) -> CombineOutcome:
+    """把两张已解锁物证对撞成一条新推断，并提升相关角色压力。"""
+    state = store.get(game_id)
+    if state is None:
+        return _combine_error("game_not_found")
+    if state.ended:
+        return _combine_error("game_ended")
+    if len(clue_ids) != 2 or clue_ids[0] == clue_ids[1]:
+        return _combine_error("combine_needs_two")
+    first_id, second_id = clue_ids
+    clues = _clue_index(state.script)
+    if first_id not in clues or second_id not in clues:
+        return _combine_error("clue_not_found")
+    for clue_id in (first_id, second_id):
+        if clue_id not in state.unlocked_clue_ids:
+            return _combine_error("clue_not_unlocked")
+    if state.combine_count >= MAX_COMBINE_PER_GAME:
+        return _combine_error(
+            "combine_limit_reached",
+            MAX_COMBINE_PER_GAME - state.combine_count,
+        )
+    pair = (first_id, second_id) if first_id < second_id else (
+        second_id,
+        first_id,
+    )
+    if pair in state.combine_pairs:
+        return _combine_error("combine_already_used")
+    rule = find_rule((first_id, second_id))
+    if rule is None:
+        return _combine_error("combine_not_found")
+
+    state.combine_pairs.add(pair)
+    state.combine_count += 1
+    pressure: dict[str, float] = {}
+    if rule.pressure_npc is not None:
+        current = state.pressure.get(rule.pressure_npc, 0.0)
+        state.pressure[rule.pressure_npc] = min(
+            MAX_PRESSURE,
+            current + rule.pressure_delta,
+        )
+        pressure[rule.pressure_npc] = state.pressure[rule.pressure_npc]
+    return CombineOutcome(
+        ok=True,
+        error=None,
+        title=rule.title,
+        text=rule.text,
+        pressure=pressure,
+        remaining=MAX_COMBINE_PER_GAME - state.combine_count,
     )
 
 
@@ -393,9 +465,12 @@ def _answer(
     clue: Clue | None = None,
     exclude_answered: bool = True,
     fact_override: Fact | None = None,
+    clue_only: bool = False,
 ) -> AskOutcome:
     intent = parse_intent(question)
-    if fact_override is not None:
+    if clue_only:
+        fact = None
+    elif fact_override is not None:
         fact = fact_override
     else:
         exclude_ids = (
@@ -411,7 +486,16 @@ def _answer(
         )
         fact = candidates[0] if candidates else None
     pressure = state.pressure.get(role.id, 0.0)
-    decision = decide(role, fact, intent, pressure)
+    if clue_only:
+        decision = Decision(
+            action="evade",
+            fact_id=None,
+            content=None,
+            is_lie=False,
+            risk=0.0,
+        )
+    else:
+        decision = decide(role, fact, intent, pressure)
     reply = compose(
         role,
         decision,
@@ -480,6 +564,19 @@ def _accusation_error(error: str) -> AccusationOutcome:
         correct=False,
         timeline=(),
         missed_fact_ids=(),
+    )
+
+
+def _combine_error(
+    error: str,
+    remaining: int = MAX_COMBINE_PER_GAME,
+) -> CombineOutcome:
+    return CombineOutcome(
+        ok=False,
+        error=error,
+        title=None,
+        text=None,
+        remaining=remaining,
     )
 
 

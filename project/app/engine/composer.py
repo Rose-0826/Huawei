@@ -112,6 +112,13 @@ def build_user_prompt(
 ) -> str:
     """构造本次动作的用户提示，只包含 Decision、允许透露的内容与物证。"""
     clue_block = _clue_text(clue)
+    if decision.action == "evade" and decision.fact_id is None and clue is not None:
+        return (
+            "动作：你压根不认识这件东西，说没见过、不认得，"
+            "不要回答别的问题，也不要提刚才问过的事。\n"
+            f"{clue_block}"
+            "只输出角色的话。"
+        )
     if decision.action == "evade" and decision.fact_id is not None:
         return (
             "动作：你知道这件事，但不愿说。含糊其辞、转移话题或反问，"
