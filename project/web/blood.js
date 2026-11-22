@@ -180,7 +180,14 @@
 
   function stripDanglingMemory(text) {
     return String(text || "")
+      .split(/我还记得[:：]/u)[0]
       .replace(/[，,、；;\s]*(?:我还记得|我记得)[:：]\s*$/u, "")
+      .trim();
+  }
+
+  function sanitizeReason(text) {
+    return stripDanglingMemory(text)
+      .replace(/[，,、；;：:\s]+$/u, "")
       .trim();
   }
 
@@ -310,7 +317,7 @@
     if (id) {
       const player = findPlayer(id);
       if (player) {
-        return player.name || "";
+        return displayName(player);
       }
       if (typeof value === "object" && value.name) {
         return value.name;
@@ -318,7 +325,8 @@
       return "";
     }
     if (typeof value === "object" && value.name) {
-      return value.name;
+      const byName = players().find((player) => player.name === value.name);
+      return byName ? displayName(byName) : value.name;
     }
     return "";
   }
@@ -329,7 +337,7 @@
     }
     const player = findPlayer(id);
     if (player) {
-      return player.name || "客人";
+      return displayName(player);
     }
     return String(id);
   }
@@ -339,7 +347,7 @@
       return "";
     }
     if (player.is_you) {
-      return player.name || "你";
+      return "你";
     }
     return player.name || "客人";
   }
@@ -548,21 +556,27 @@ state.selectedId = null;
     }
     if (typeof raw === "string") {
       const player = players().find((item) => item.name === raw);
-      return { id: player ? player.id : raw, name: player ? player.name : raw };
+      return { id: player ? player.id : raw, name: player ? displayName(player) : raw };
     }
     let id = idOf(raw);
     let name = String((raw && raw.name) || "") || (id ? playerName(id) : "");
+    if (id) {
+      const player = findPlayer(id);
+      if (player) {
+        return { id, name: displayName(player) };
+      }
+    }
     if (!id && name) {
       const byName = players().find((item) => item.name === name);
       if (byName) {
         id = byName.id;
-        name = byName.name;
+        name = displayName(byName);
       }
     } else if (id && !findPlayer(id)) {
       const byName = players().find((item) => item.name === name || item.name === id);
       if (byName) {
         id = byName.id;
-        name = byName.name;
+        name = displayName(byName);
       }
     }
     if (!id && !name) {
@@ -642,15 +656,16 @@ state.selectedId = null;
       if (id) {
         const player = findPlayer(id);
         if (player) {
-          return player.name || "";
+          return displayName(player);
         }
       }
       if (typeof candidate === "string") {
         const player = players().find((item) => item.name === candidate);
-        return player ? player.name : candidate;
+        return player ? displayName(player) : candidate;
       }
       if (candidate && typeof candidate === "object" && candidate.name) {
-        return candidate.name;
+        const player = players().find((item) => item.name === candidate.name || item.id === candidate.name);
+        return player ? displayName(player) : candidate.name;
       }
     }
     return "";
@@ -920,9 +935,7 @@ state.selectedId = null;
       item.classList.add("narration");
     }
     item.append(
-      node("p", "log-who", isYou
-        ? (entry.speaker_name === "你" ? "你" : `${entry.speaker_name} · 你`)
-        : entry.speaker_name),
+      node("p", "log-who", isYou ? "你" : entry.speaker_name),
       node("p", "log-text", entry.text),
     );
     return item;
@@ -1086,17 +1099,21 @@ state.selectedId = null;
     const votes = result.votes || [];
     const threshold = result.threshold;
     const topCount = rows.length ? rows[0].count : 0;
+    const executedName = result.executedName || "";
     const short = Boolean(threshold) && topCount < threshold;
+    const tieFlag = Boolean(result.tie) || /平票/.test(String(result.message || ""));
+    const tied = !executedName && (tieFlag
+      || (Boolean(threshold) && rows.length > 1 && rows[1].count === topCount && topCount > 0));
     board.textContent = "";
-    board.dataset.short = short ? "1" : "0";
+    board.dataset.short = (short || tied) ? "1" : "0";
 
     const title = node("p", "vote-title");
     title.append(node("span", "", `第 ${result.day || state.game.day} 天 · 投票`));
     if (threshold) {
       title.append(node(
         "span",
-        `vote-threshold${short ? " short" : ""}`,
-        `已投 ${votes.length} / 需 ${threshold} 票（最高 ${topCount}）`,
+        `vote-threshold${short || tied ? " short" : ""}`,
+        `已投 ${votes.length} / 需 ${threshold} 票`,
       ));
     }
     board.append(title);
@@ -1110,12 +1127,18 @@ state.selectedId = null;
       board.append(chips);
     }
 
-    const executedName = result.executedName || "";
-    const exec = node("div", `vote-exec ${executedName ? "is-executed" : "is-short"}`);
-    exec.append(node("span", "exec-stamp", executedName ? "处决" : "未决"));
-    exec.append(node("span", "exec-text", executedName
-      ? `处决 · ${executedName} 被投票处决`
-      : "未决 · 票数不够，今晚无人被处决"));
+    const outcome = executedName ? "executed" : (tied ? "tie" : "short");
+    const exec = node("div", `vote-exec is-${outcome}`);
+    exec.append(node("span", "exec-stamp", executedName ? "处决" : (tied ? "平票" : "未决")));
+    let execText = "今晚无人被处决";
+    if (executedName) {
+      execText = `处决 · ${executedName} 被投票处决`;
+    } else if (tied) {
+      execText = "平票，今晚无人被处决";
+    } else if (threshold) {
+      execText = `最高 ${topCount} 票，未达 ${threshold} 票门槛`;
+    }
+    exec.append(node("span", "exec-text", execText));
     board.append(exec);
 
     if (votes.length) {
@@ -1507,6 +1530,110 @@ state.selectedId = null;
     holder.append(figure);
   }
 
+  function nameToId(name) {
+    const player = players().find((item) => item.name === name || item.id === name);
+    return player ? player.id : "";
+  }
+
+  function personFromName(name) {
+    const id = nameToId(name);
+    return { id, name: id ? playerName(id) : name };
+  }
+
+  function aftermathFromLog() {
+    const log = (state.game && state.game.public_log) || [];
+    const byDay = new Map();
+    for (const entry of log) {
+      const narration = entry.speaker_id === "__narration"
+        || entry.speaker_id === "narrator"
+        || entry.speaker_name === "旁白";
+      if (!narration) {
+        continue;
+      }
+      const text = String(entry.text || "");
+      if (!text) {
+        continue;
+      }
+      const day = Math.max(1, Number(entry.day) || 1);
+      const row = byDay.get(day) || { day, executed: null, killed: null, note: "" };
+      if (!row.executed) {
+        const exec = text.match(/(?:^|[，,。；;\s])([^，,。；;\s]{1,8})\s*被(?:投票)?处决/u);
+        if (exec) {
+          row.executed = personFromName(exec[1]);
+        }
+      }
+      if (!row.killed) {
+        const kill = text.match(/天亮时[，,]?\s*(你|[^，,。；;\s]{1,8})\s*(?:没有下楼|死在|倒在|不见)/u);
+        if (kill) {
+          row.killed = personFromName(kill[1]);
+        }
+      }
+      if (!row.note) {
+        row.note = text.slice(0, 48);
+      }
+      byDay.set(day, row);
+    }
+    return [...byDay.values()].sort((left, right) => left.day - right.day);
+  }
+
+  function resolveAftermath() {
+    const backend = (state.game && state.game.aftermath) || [];
+    const rows = backend.length
+      ? backend.map((item) => ({
+        day: item.day,
+        executed: item.executed ? { ...item.executed } : null,
+        killed: item.killed ? { ...item.killed } : null,
+        note: item.note || "",
+      }))
+      : aftermathFromLog();
+    const result = state.voteResult;
+    if (result && (result.executedName || result.message)) {
+      const day = result.day || (state.game && state.game.day) || 1;
+      let row = rows.find((item) => item.day === day);
+      if (!row) {
+        row = { day, executed: null, killed: null, note: "" };
+        rows.push(row);
+      }
+      if (!row.executed && result.executedName) {
+        row.executed = { id: result.executedId, name: result.executedName };
+      }
+      if (!row.note && result.message) {
+        row.note = result.message;
+      }
+    }
+    if (!rows.length) {
+      rows.push({
+        day: (state.game && state.game.day) || 1,
+        executed: null,
+        killed: null,
+        note: (state.game && state.game.message) || "牌翻过来了，本局到此为止。",
+      });
+    }
+    return rows.sort((left, right) => left.day - right.day);
+  }
+
+  function playerDeathDay() {
+    const id = youId();
+    const player = youPlayer();
+    const names = new Set(["你"]);
+    if (player && player.name) {
+      names.add(player.name);
+    }
+    const days = [];
+    if (state.voteResult && state.voteResult.executedId === id) {
+      days.push(state.voteResult.day || 1);
+    }
+    for (const item of resolveAftermath()) {
+      if (item.executed && (item.executed.id === id || names.has(item.executed.name))) {
+        days.push(item.day);
+      }
+      if (item.killed && (item.killed.id === id || names.has(item.killed.name))) {
+        days.push(item.day);
+      }
+    }
+    return days.length ? Math.min(...days) : ((state.game && state.game.day) || 1);
+  }
+
   function renderAftermath(list) {
     const box = $("end-aftermath");
     const target = $("end-aftermath-list");
@@ -1536,8 +1663,26 @@ state.selectedId = null;
         what.append(node("span", "ea-empty", "无人出局"));
       }
       row.append(what);
-      if (item.note) {
-        row.append(node("span", "ea-note", item.note));
+      let note = item.note || "";
+      const subjects = [];
+      if (item.executed) {
+        subjects.push(item.executed.name);
+      }
+      if (item.killed) {
+        subjects.push(item.killed.name);
+      }
+      const you = youPlayer();
+      if (you && you.name) {
+        subjects.push(you.name);
+      }
+      const matched = subjects.find((name) => name && note.startsWith(name));
+      if (matched) {
+        note = note.slice(matched.length)
+          .replace(/^\s*(?:被(?:投票)?处决|夜里|天亮时|死在|没有下楼)[，,]?\s*/u, "")
+          .trim();
+      }
+      if (note) {
+        row.append(node("span", "ea-note", note));
       }
       target.append(row);
     }
@@ -1587,23 +1732,78 @@ state.selectedId = null;
     $("end-murderer-role").textContent = revealRoleLabel();
     const role = youRole();
     $("end-you").textContent = `你 · ${ROLE_LABEL[role] || "身份未知"}`;
-    $("end-days").textContent = `${state.game ? state.game.day : 1} 天`;
+    const youDead = Boolean(state.game && state.game.you_alive === false)
+      || Boolean(state.voteResult && state.voteResult.executedId === youId())
+      || Boolean(youPlayer() && youPlayer().alive === false);
+    const survived = youDead ? playerDeathDay() : ((state.game && state.game.day) || 1);
+    $("end-days").textContent = `${survived} 天`;
     renderEndPortrait();
-    renderAftermath((state.game && state.game.aftermath) || []);
+    renderAftermath(resolveAftermath());
     renderFatalVote();
     overlay.classList.remove("hidden");
     overlay.setAttribute("aria-hidden", "false");
   }
 
+  const DRAWER_ENTRY_TYPES = new Set([
+    "ask", "speak", "say", "discuss", "discussion", "reply", "respond",
+    "defense", "defend", "crossexam", "cross-exam", "nominate", "nomination",
+    "vote", "voting", "night", "kill", "execute", "execution", "executed",
+    "narration", "narrate", "public", "message", "report", "system",
+  ]);
+
+  function adaptDrawerEntry(entry) {
+    if (!entry || typeof entry !== "object") {
+      return null;
+    }
+    const type = String(entry.type || entry.kind || entry.event || "").toLowerCase();
+    if (type && !DRAWER_ENTRY_TYPES.has(type)) {
+      return null;
+    }
+    const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : null;
+    const data = entry.data && typeof entry.data === "object" ? entry.data : null;
+    const text = entry.text ?? entry.content
+      ?? (payload && (payload.text ?? payload.content))
+      ?? (data && (data.text ?? data.content));
+    if (typeof text !== "string" || !text.trim()) {
+      return null;
+    }
+    return {
+      ...entry,
+      text,
+      speaker_id: entry.speaker_id || entry.speakerId
+        || (payload && payload.speaker_id) || (data && data.speaker_id),
+      speaker_name: entry.speaker_name || entry.speakerName
+        || (payload && payload.speaker_name) || (data && data.speaker_name),
+      day: entry.day ?? (payload && payload.day) ?? (data && data.day),
+    };
+  }
+
   function extractDrawerEntries(data) {
     if (Array.isArray(data)) {
-      return normalizeLog(data);
+      return normalizeLog(data.map(adaptDrawerEntry).filter(Boolean));
     }
     if (!data || typeof data !== "object") {
       return [];
     }
     const raw = data.entries || data.log || data.public_log || data.events || [];
-    return normalizeLog(raw);
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return normalizeLog(raw.map(adaptDrawerEntry).filter(Boolean));
+  }
+
+  function mergeDrawerEntries(primary, extra) {
+    const merged = [];
+    const seen = new Set();
+    for (const entry of [...primary, ...extra]) {
+      const key = `${entry.speaker_id}|${entry.text}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(entry);
+    }
+    return merged.map((entry, index) => ({ ...entry, seq: index + 1 }));
   }
 
   function localLogEntries() {
@@ -1636,9 +1836,7 @@ state.selectedId = null;
       }
       const day = entry.day || (state.game && state.game.day) || 1;
       item.append(
-        node("p", "drawer-meta", `第 ${day} 天 · ${isYou
-          ? (entry.speaker_name === "你" ? "你" : `${entry.speaker_name} · 你`)
-          : entry.speaker_name}`),
+        node("p", "drawer-meta", `第 ${day} 天 · ${isYou ? "你" : entry.speaker_name}`),
         node("p", "drawer-text", entry.text),
       );
       list.append(item);
@@ -1653,20 +1851,24 @@ state.selectedId = null;
     state.drawerOpen = true;
     $("log-button").setAttribute("aria-expanded", "true");
     $("log-drawer-game").textContent = state.gameId || "";
-    renderDrawer([]);
+    const local = localLogEntries();
+    renderDrawer(local);
     if (!state.game) {
       return;
     }
     if (state.mock) {
-      renderDrawer(localLogEntries());
+      renderDrawer(local);
       return;
     }
     try {
       const data = await apiRequest(`${API}/games/${state.gameId}/log`);
-      renderDrawer(extractDrawerEntries(data));
+      const merged = mergeDrawerEntries(local, extractDrawerEntries(data));
+      renderDrawer(merged);
     } catch (error) {
-      renderDrawer(localLogEntries());
-      showToast("回看接口未就绪，先显示本地记录。", "warn");
+      renderDrawer(local);
+      if (local.length) {
+        showToast("回看接口未就绪，先显示本地记录。", "warn");
+      }
     }
   }
 
@@ -2123,6 +2325,8 @@ state.selectedId = null;
       executedId: executedActualId,
       executedName,
       day: state.game ? state.game.day : 1,
+      message: String((result && result.message) || ""),
+      tie: Boolean(result && (result.tie || result.tied)),
     };
     state.lastVotes = state.voteResult;
     state.nominationMode = false;
@@ -2148,7 +2352,11 @@ state.selectedId = null;
     }
 
     const message = (result && result.message)
-      || (executedName ? `${executedName} 被处决，天黑了。` : "票数不够，今晚无人被处决。");
+      || (executedName
+        ? `${executedName} 被处决，天黑了。`
+        : (state.voteResult.tie
+          ? "平票，今晚无人被处决。"
+          : `最高 ${Math.max(0, ...tally.map((row) => row.count), 0)} 票，未达 ${threshold} 票门槛。`));
     showReport(message, executedName ? "warn" : "info");
 
     const wide = window.matchMedia("(min-width: 821px)").matches;
@@ -2234,6 +2442,21 @@ state.selectedId = null;
     render();
   }
 
+  function voteDisplayName(id, provided) {
+    if (id && id === youId()) {
+      return "你";
+    }
+    const player = findPlayer(id);
+    if (player) {
+      return displayName(player);
+    }
+    if (provided) {
+      const byName = players().find((item) => item.name === provided);
+      return byName ? displayName(byName) : provided;
+    }
+    return id || "";
+  }
+
   function normalizeVotes(raw) {
     if (Array.isArray(raw)) {
       return raw
@@ -2252,12 +2475,10 @@ state.selectedId = null;
           }
           return {
             voterId,
-            voterName: String(vote.voter_name || vote.voterName || "")
-              || playerName(voterId),
+            voterName: voteDisplayName(voterId, String(vote.voter_name || vote.voterName || "")),
             targetId,
-            targetName: String(vote.target_name || vote.targetName || "")
-              || playerName(targetId),
-            reason: String(vote.reason || vote.why || vote.rationale || ""),
+            targetName: voteDisplayName(targetId, String(vote.target_name || vote.targetName || "")),
+            reason: sanitizeReason(vote.reason || vote.why || vote.rationale || ""),
           };
         })
         .filter(Boolean);
@@ -2478,7 +2699,7 @@ state.selectedId = null;
   }
 
   function mockCreate() {
-    const forcedVillager = ["you-die", "short", "short2", "execute", "execute3", "vote-you"].includes(state.mockCase);
+    const forcedVillager = ["you-die", "short", "short2", "execute", "execute3", "vote-you", "tie"].includes(state.mockCase);
     const youMurderer = forcedVillager ? false : Math.random() < 0.38;
     const murderer = youMurderer
       ? "p0"
@@ -2660,6 +2881,7 @@ state.selectedId = null;
     const executeThree = mode === "execute3" && firstRound;
     const voteYouOut = mode === "vote-you" && firstRound;
     const shortVote = (mode === "short" || mode === "short2" || mode === "you-die") && firstRound;
+    const tieCase = mode === "tie" && firstRound;
     let threshold = Math.floor(alive.length / 2) + 1;
     if (executeThree || voteYouOut) {
       threshold = 3;
@@ -2678,6 +2900,8 @@ state.selectedId = null;
         chosen = target;
       } else if (shortVote) {
         chosen = index === 0 ? target : (others[index % others.length] || target);
+      } else if (tieCase) {
+        chosen = index < 2 ? target : (others[0] || target);
       } else if (voter.id === state.murdererId) {
         const safe = alive.filter((player) => player.id !== voter.id && player.id !== target.id);
         chosen = randomOf(safe.length ? safe : alive.filter((player) => player.id !== voter.id)) || target;
@@ -2707,7 +2931,9 @@ state.selectedId = null;
       tally[vote.target_id] = (tally[vote.target_id] || 0) + 1;
     }
     const ranking = Object.entries(tally).sort((left, right) => right[1] - left[1]);
-    const executedId = ranking.length && ranking[0][1] >= threshold ? ranking[0][0] : "";
+    const topCount = ranking.length ? ranking[0][1] : 0;
+    const tied = ranking.length > 1 && ranking[1][1] === topCount;
+    const executedId = ranking.length && topCount >= threshold ? ranking[0][0] : "";
     const executedName = executedId ? playerName(executedId) : "";
     if (executedId) {
       markMockDead(executedId);
@@ -2737,13 +2963,17 @@ state.selectedId = null;
         day,
         executed: null,
         killed: null,
-        note: "票数不够，今晚无人被处决",
+        note: tied
+          ? "平票，今晚无人被处决"
+          : `最高 ${topCount} 票，未达 ${threshold} 票门槛`,
       });
     }
 
     const message = executedId
       ? `${executedName} 被投票处决，天黑了。`
-      : "票数不够，今晚无人被处决。";
+      : (tied
+        ? "平票，今晚无人被处决。"
+        : `最高 ${topCount} 票，未达 ${threshold} 票门槛。`);
     const phase = winner ? "ended" : "night";
     const log = state.game.public_log;
     log.push({
@@ -2758,6 +2988,7 @@ state.selectedId = null;
       tally,
       threshold,
       executed: executedId ? { id: executedId, name: executedName } : null,
+      tie: !executedId && tied,
       winner,
       reveal: winner ? mockReveal() : null,
       message,
