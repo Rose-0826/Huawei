@@ -102,6 +102,23 @@
             </p>
             <p id="confide-reply-text" class="confide-reply-text"></p>
             <p id="confide-reply-shift" class="confide-reply-shift"></p>
+            <p id="confide-reply-betray" class="confide-betray hidden" role="status"></p>
+          </div>
+        </div>
+        <div id="inspect-panel" class="confide-panel inspect-panel hidden" aria-live="polite" aria-label="查验">
+          <p class="confide-kicker">
+            <span>INSPECT · 掀牌查验</span>
+            <span id="inspect-count" class="confide-count">本局 1 次</span>
+          </p>
+          <p id="inspect-lede" class="confide-lede">只掀一个人的底牌。查完，桌上都会知道你查过谁。</p>
+          <div id="inspect-targets" class="confide-targets" role="group" aria-label="查验对象"></div>
+          <div class="confide-actions">
+            <button id="inspect-confirm" class="primary-button" type="button" disabled>确认查验</button>
+            <button id="inspect-close" class="ghost-button" type="button">收起</button>
+          </div>
+          <div id="inspect-result" class="inspect-result hidden" role="status">
+            <p id="inspect-verdict" class="inspect-verdict"></p>
+            <p id="inspect-public" class="inspect-public"></p>
           </div>
         </div>
         <div id="defense-card" class="defense-card hidden" aria-live="polite">
@@ -132,8 +149,14 @@
                  placeholder="对桌上的人说点什么" aria-label="你的发言">
           <button id="speak-button" class="primary-button" type="submit" disabled>发言</button>
         </form>
+        <form id="last-words-form" class="speak-form last-words-form hidden" autocomplete="off">
+          <input id="last-words-input" type="text" maxlength="120"
+                 placeholder="留一句遗言" aria-label="你的遗言">
+          <button id="last-words-button" class="primary-button" type="submit" disabled>留遗言</button>
+        </form>
         <div class="action-side">
           <button id="confide-button" class="ghost-button hidden" type="button">密谈</button>
+          <button id="inspect-button" class="ghost-button hidden" type="button">查验</button>
           <button id="secondary-button" class="ghost-button" type="button">结束讨论，提名</button>
           <button id="primary-button" class="primary-button hidden" type="button">投票</button>
         </div>
@@ -149,6 +172,13 @@
           <input id="ballot-reason" type="text" maxlength="80"
                  placeholder="为什么投这一票？可留空">
         </label>
+      </div>
+      <div id="runoff-panel" class="runoff-panel hidden" role="group" aria-label="平票加赛">
+        <div class="ballot-head">
+          <span class="ballot-kicker">RUNOFF · 平票加赛</span>
+          <span id="runoff-note" class="ballot-note">只在平票的人之间再投一次</span>
+        </div>
+        <div id="runoff-options" class="ballot-options" role="group" aria-label="加赛候选"></div>
       </div>
       <div id="confirm-strip" class="confirm-strip hidden" role="alertdialog" aria-live="assertive">
         <span id="confirm-text"></span>
@@ -190,6 +220,15 @@
         </div>
       </dl>
       <p id="end-fatal" class="end-fatal hidden"></p>
+      <p id="end-last-words" class="end-last-words hidden"></p>
+      <form id="end-last-words-form" class="end-last-words-form hidden" autocomplete="off">
+        <label class="end-last-words-label" for="end-last-words-input">留一句遗言</label>
+        <div class="end-last-words-row">
+          <input id="end-last-words-input" type="text" maxlength="120"
+                 placeholder="你已出局，留一句遗言" aria-label="你的遗言">
+          <button id="end-last-words-button" class="primary-button" type="submit">留下</button>
+        </div>
+      </form>
       <p id="end-message" class="end-message">凶手、死者，以及每一个没说出口的谎，都留在这一夜。</p>
       <div class="end-actions">
         <button id="end-log" class="ghost-button" type="button">查看本局记录</button>

@@ -69,6 +69,12 @@ button:disabled {
   display: none !important;
 }
 
+.ghost-button.is-locked {
+  border-style: dashed;
+  color: var(--ink-dim);
+  opacity: 0.78;
+}
+
 .kicker {
   margin: 0;
   color: var(--ink-dim);
@@ -1216,6 +1222,30 @@ button:disabled {
   color: var(--ink-soft);
 }
 
+.log-entry.log-appear {
+  animation: logAppear 0.34s ease both;
+}
+
+.log-entry.death {
+  border-left-color: rgba(194, 90, 68, 0.55);
+  background: rgba(42, 12, 8, 0.16);
+}
+
+.log-entry.death .log-text {
+  color: #e8c3b0;
+}
+
+@keyframes logAppear {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .log-day {
   margin: 10px 0 4px;
   padding: 5px 0;
@@ -1253,7 +1283,10 @@ button:disabled {
 
 .discussion.confiding .discussion-scroll,
 .discussion.confiding .defense-card,
-.discussion.confiding .vote-board {
+.discussion.confiding .vote-board,
+.discussion.inspecting .discussion-scroll,
+.discussion.inspecting .defense-card,
+.discussion.inspecting .vote-board {
   display: none;
 }
 
@@ -1432,6 +1465,56 @@ button:disabled {
   font-family: var(--mono);
   font-size: 12px;
   letter-spacing: 0.06em;
+}
+
+.confide-betray,
+.private-betray {
+  margin: 8px 0 0;
+  padding: 6px 9px;
+  border-left: 2px solid rgba(194, 90, 68, 0.8);
+  color: #e8b49f;
+  background: rgba(42, 12, 8, 0.4);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.inspect-panel {
+  border-left-color: rgba(214, 173, 99, 0.7);
+}
+
+.inspect-panel.has-result .confide-targets {
+  display: none;
+}
+
+.inspect-result {
+  margin-top: 13px;
+  padding: 11px 13px 12px;
+  border: 1px solid rgba(214, 173, 99, 0.42);
+  border-radius: var(--radius-card);
+  background: linear-gradient(180deg, rgba(23, 18, 13, 0.9), rgba(10, 7, 5, 0.94));
+  box-shadow: inset 0 1px 0 var(--edge-light);
+  animation: whisperIn 0.3s ease both;
+}
+
+.inspect-verdict {
+  margin: 0;
+  color: var(--gold-bright);
+  font-size: 21px;
+  line-height: 1.42;
+  letter-spacing: 0.06em;
+}
+
+.inspect-verdict[data-result="murderer"] {
+  color: #f0a68e;
+}
+
+.inspect-public {
+  margin: 7px 0 0;
+  padding-top: 7px;
+  border-top: 1px dashed rgba(214, 173, 99, 0.2);
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .defense-card {
@@ -1978,6 +2061,42 @@ button:disabled {
   color: var(--ink-dim);
 }
 
+.runoff-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+  padding: 8px 11px;
+  border: 1px solid rgba(214, 173, 99, 0.42);
+  border-radius: var(--radius-control);
+  background: rgba(214, 173, 99, 0.06);
+  box-shadow: inset 0 1px 0 var(--edge-light);
+}
+
+.runoff-panel .ballot-head {
+  gap: 2px;
+}
+
+.runoff-panel .ballot-note {
+  white-space: normal;
+  font-size: 12.5px;
+}
+
+
+.last-words-form {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.last-words-form input {
+  border-color: rgba(194, 90, 68, 0.5);
+}
+
+.last-words-form .primary-button {
+  border-color: rgba(194, 90, 68, 0.72);
+}
+
 .confirm-strip {
   grid-column: 1 / -1;
   display: flex;
@@ -2277,6 +2396,65 @@ button:disabled {
   letter-spacing: 0.02em;
 }
 
+.end-last-words {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(214, 173, 99, 0.42);
+  border-radius: var(--radius-tag);
+  color: var(--gold-bright);
+  background: rgba(214, 173, 99, 0.06);
+  font-size: 14px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+}
+
+.end-last-words-form {
+  margin: 12px 0 0;
+  padding: 10px 12px 11px;
+  border: 1px solid rgba(214, 173, 99, 0.42);
+  border-radius: var(--radius-tag);
+  background: rgba(214, 173, 99, 0.05);
+  text-align: left;
+}
+
+.end-last-words-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--gold);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+}
+
+.end-last-words-row {
+  display: flex;
+  gap: 8px;
+}
+
+.end-last-words-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid rgba(214, 173, 99, 0.34);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: rgba(7, 5, 4, 0.8);
+  font-size: 14px;
+  outline: none;
+}
+
+.end-last-words-row input:focus {
+  border-color: var(--gold);
+  background: rgba(9, 7, 5, 0.88);
+}
+
+.end-last-words-row button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 16px;
+}
+
 .end-message {
   margin: 14px 0 0;
   color: var(--ink-soft);
@@ -2463,6 +2641,15 @@ button:disabled {
 
 .drawer-entry.is-event .drawer-meta {
   color: var(--gold-bright);
+}
+
+.drawer-entry.is-vote {
+  border-left-color: rgba(214, 173, 99, 0.62);
+}
+
+.drawer-entry.is-night {
+  border-left-color: rgba(194, 90, 68, 0.52);
+  background: rgba(42, 12, 8, 0.14);
 }
 
 .private-entry {
@@ -3048,8 +3235,8 @@ button:disabled {
   }
 
   .vote-reason {
-    font-size: 12px;
-    line-height: 1.45;
+    font-size: 12.5px;
+    line-height: 1.5;
   }
 
   .vote-chip {
@@ -3223,6 +3410,28 @@ button:disabled {
     padding: 6px 8px 7px;
   }
 
+  .runoff-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+    padding: 6px 8px 7px;
+  }
+
+  .runoff-panel .ballot-head {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .runoff-panel .ballot-note {
+    display: block;
+    font-size: 12px;
+    white-space: normal;
+  }
+
   .ballot-head {
     display: none;
   }
@@ -3235,6 +3444,10 @@ button:disabled {
     font-family: var(--mono);
     font-size: 10.5px;
     letter-spacing: 0.16em;
+  }
+
+  .runoff-panel .ballot-options::before {
+    content: none;
   }
 
   .ballot-note {
@@ -3293,6 +3506,10 @@ button:disabled {
     padding: 22px 18px 20px;
   }
 
+  .end-frame {
+    max-height: calc(100dvh - 12px);
+  }
+
   .end-facts {
     grid-template-columns: 1fr;
     gap: 8px;
@@ -3312,6 +3529,15 @@ button:disabled {
   .end-actions,
   .gate-actions {
     flex-direction: column;
+  }
+
+  .end-actions {
+    position: sticky;
+    bottom: -2px;
+    z-index: 3;
+    margin-top: 14px;
+    padding: 10px 0 2px;
+    background: linear-gradient(180deg, rgba(16, 12, 8, 0), rgba(16, 12, 8, 0.96) 38%);
   }
 
   .end-actions button,
@@ -3485,34 +3711,64 @@ button:disabled {
     gap: 4px;
     margin-left: 3px;
     padding-left: 7px;
-    font-size: 12px;
+    font-size: 12.5px;
+    line-height: 1.5;
   }
 
   .vote-reason-label {
-    font-size: 10px;
+    font-size: 10.5px;
   }
 
   .ballot-note {
     display: none;
   }
 
+  .runoff-panel .ballot-note {
+    display: block;
+  }
+
   .end-frame {
-    padding: 18px 14px 16px;
+    max-height: calc(100dvh - 10px);
+    padding: 14px 12px 10px;
+  }
+
+  .end-frame h2 {
+    margin-top: 5px;
+    font-size: 26px;
+  }
+
+  .end-subtitle {
+    margin-top: 7px;
+    font-size: 14px;
+    line-height: 1.55;
   }
 
   .end-portrait {
-    width: 66px;
-    height: 66px;
+    width: 58px;
+    height: 58px;
+    margin-bottom: -2px;
   }
 
   .end-portrait .end-figure {
-    width: 44px;
-    height: 50px;
+    width: 38px;
+    height: 44px;
+  }
+
+  .end-facts {
+    gap: 6px;
+    margin-top: 12px;
+    padding: 9px 0;
+  }
+
+  .end-aftermath {
+    margin-top: 10px;
+    padding-top: 8px;
   }
 
   .end-aftermath-day {
     grid-template-columns: 48px minmax(0, 1fr);
     gap: 2px 8px;
+    padding: 5px 0;
   }
 
   .ea-day {
@@ -3525,6 +3781,41 @@ button:disabled {
 
   .ea-note {
     font-size: 12px;
+  }
+
+  .end-last-words {
+    margin-top: 9px;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  .end-last-words-form {
+    margin-top: 9px;
+    padding: 8px 10px 9px;
+  }
+
+  .end-last-words-row input {
+    height: 36px;
+    font-size: 16px;
+  }
+
+  .end-last-words-row button {
+    min-height: 36px;
+    padding: 0 12px;
+  }
+
+  .end-message {
+    margin-top: 9px;
+    font-size: 13.5px;
+  }
+
+  .end-actions {
+    margin-top: 10px;
+    gap: 7px;
+  }
+
+  .end-actions button {
+    min-height: 40px;
   }
 
   .action-bar {
@@ -3647,6 +3938,8 @@ button:disabled {
   .log-drawer,
   .vote-row,
   .exec-stamp,
+  .log-entry.log-appear,
+  .inspect-result,
   .seat.just-executed .seat-plate,
   .seat.just-executed::before {
     animation: none;
