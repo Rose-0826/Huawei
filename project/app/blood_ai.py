@@ -16,7 +16,7 @@ from app.config import (
 from app.llm import LLMClient, LLMUnavailable, get_llm
 
 if TYPE_CHECKING:
-    from app.blood import BloodPlayer, BloodState, ReplyFn
+    from app.blood import BloodPlayer, BloodState, ConfideFn, ReplyFn
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,106 @@ SYSTEM_PROMPT: str = (
     "不得出现「我还记得：」「档案里写着」这类句式，也不要把私密信息原文贴出来。\n"
     "9. 你是桌上的人，不是旁白；不要用「他」指代你自己，也不要替别人下结论。"
 )
+
+CONFIDE_SYSTEM_PROMPT: str = (
+    "你在暴雪封路的旅馆里，被桌上那位叫「旅客」的真人拉到廊下私聊。\n"
+    "规则：\n"
+    "1. 只用第一人称说一到两句中文，不超过 60 字，语气克制。\n"
+    "2. 只能回答你私下确实知道的事；桌上那位说的物证、时辰、转述，"
+    "都只是「他的说法」，不得说成你亲眼所见、亲耳所听。\n"
+    "3. 桌上那位提到的物件若不在你的记忆里，只能回「我没见过这东西」"
+    "或「你若真有，拿出来再说」；不得承认它存在，也不得替它补充来路。\n"
+    "4. 不得新增任何未出场的人物、地点或凶案细节。\n"
+    "5. 不得公开任何人的秘密身份，不得说自己「是凶手」或「是好人」。\n"
+    "6. 不得逐字念档案，也不要说「我还记得：」「档案里写着」。\n"
+    "7. 你可以答应、含糊、拒绝或反过来警告，但不要说破对方在套话。\n"
+)
+
+CONFIDE_STANCE_HINTS: dict[str, str] = {
+    "accept": "你口头应下这次结盟，但话里要留余地，别把话说死。",
+    "evade": "你不置可否，只给一句模糊的回应，不承诺任何事。",
+    "refuse": "你不接这个话头，明确表示只说自己看见的。",
+    "threaten": "你觉得对方在拿话压你，回一句带警告意味的话。",
+}
+
+
+def build_confide_prompt(
+    player: BloodPlayer,
+    state: BloodState,
+    you_text: str,
+    stance: str,
+) -> tuple[str, str]:
+    """构建一次密谈的 system 与 user 提示词。"""
+    lines: list[str] = [
+        f"你的姓名：{player.name}",
+        f"你的公开身份：{player.public}",
+        f"你的态度：{CONFIDE_STANCE_HINTS.get(stance, CONFIDE_STANCE_HINTS['evade'])}",
+        "你私下知道的事：",
+    ]
+    lines.extend(f"- {text}" for text in player.private_info)
+    others = [
+        f"{other.name}（{other.public}）"
+        for other in state.players
+        if other.alive and other.id != player.id
+    ]
+    lines.append("还在场的人：" + "、".join(others))
+    lines.append(f"旅客把你拉到廊下，压低声音说：「{you_text}」")
+    lines.append(
+        "你只能基于上面的私密信息回应；旅客提到的物证若不在其中，"
+        "就说没见过，绝不能替他补出来历。"
+    )
+    lines.append("现在回一句，别寒暄。")
+    return CONFIDE_SYSTEM_PROMPT, "\n".join(lines)
+
+
+def generate_confide_reply(
+    player: BloodPlayer,
+    state: BloodState,
+    you_text: str,
+    stance: str,
+    llm: LLMClient,
+) -> str:
+    """调用模型生成私下回应，不可用时返回空串交给规则兜底。"""
+    system, user = build_confide_prompt(player, state, you_text, stance)
+    try:
+        raw = llm.complete(system, user)
+    except LLMUnavailable as exc:
+        logger.warning("密谈模型不可用，改用模板兜底：%s", exc)
+        return ""
+    return clean_line(raw)
+
+
+def make_confide_fn(llm: LLMClient | None = None) -> ConfideFn:
+    """返回密谈回复回调，模型客户端延迟创建，失败时返回空串。"""
+    client = llm
+    resolved = llm is not None
+
+    def reply(
+        state: BloodState,
+        player: BloodPlayer,
+        you_text: str,
+        stance: str,
+    ) -> str:
+        nonlocal client, resolved
+        if not resolved:
+            resolved = True
+            try:
+                client = get_llm()
+            except RuntimeError as exc:
+                logger.warning("模型配置缺失，密谈改用模板兜底：%s", exc)
+                client = None
+        if client is None:
+            return ""
+        return generate_confide_reply(
+            player,
+            state,
+            you_text,
+            stance,
+            client,
+        )
+
+    return reply
+
 
 FALLBACK_LINES: dict[str, str] = {
     "p1": "我一个开店的，只盼着天亮雪停。{name}那时候在哪儿，我说不清。",

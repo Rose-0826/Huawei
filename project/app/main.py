@@ -17,7 +17,9 @@ from app.blood import (
     BloodState,
     BloodStore,
     BloodView,
+    ConfideOutcome,
     DefenseOutcome,
+    LastWordsOutcome,
     NightOutcome,
     TalkOutcome,
     VoteOutcome,
@@ -25,6 +27,8 @@ from app.blood import (
 from app.config import (
     BLOOD_MAX_DEFENSE_SPEAK_PER_DAY,
     BLOOD_MAX_SPEAK_PER_DAY,
+    CONFIDE_TEXT_MAX_CHARS,
+    LIMIT_PER_GAME,
 )
 from app.llm import LLMClient
 from app.models import Script
@@ -96,6 +100,7 @@ class BloodStateResponse(APIModel):
     winner: Literal["good", "murderer"] | None = None
     reveal: BloodRevealPublic | None = None
     aftermath: list[dict[str, object]] = Field(default_factory=list)
+    day_history: list[dict[str, object]] = Field(default_factory=list)
     you_alive: bool = True
 
 
@@ -113,6 +118,7 @@ class BloodTalkResponse(APIModel):
     replies: list[BloodReplyPublic]
     public_log: list[BloodLogEntryPublic]
     phase: Literal["discussion", "defense", "night", "ended"]
+    notice: str = ""
 
 
 class BloodSpeakRequest(APIModel):
@@ -194,6 +200,54 @@ class BloodNightResponse(APIModel):
     aftermath: list[dict[str, object]] = Field(default_factory=list)
 
 
+class BloodConfideRequest(APIModel):
+    """真人私下找一名 agent 说话。"""
+
+    target_id: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=CONFIDE_TEXT_MAX_CHARS)
+
+
+class BloodConfideResponse(APIModel):
+    """一次密谈的结果，正文只回给真人。"""
+
+    stance: Literal["accept", "refuse", "evade", "threaten"]
+    reply: str
+    trust: int
+    suspicion: int
+    public_line: str
+
+
+class BloodPrivateEntryPublic(APIModel):
+    """只给真人看的密谈记录。"""
+
+    day: int
+    target_id: str
+    target_name: str
+    text: str
+    stance: Literal["accept", "refuse", "evade", "threaten"]
+    reply: str
+
+
+class BloodPrivateLogResponse(APIModel):
+    """真人私有密谈日志。"""
+
+    entries: list[BloodPrivateEntryPublic]
+
+
+class BloodLastWordsRequest(APIModel):
+    """真人出局后的遗言。"""
+
+    text: str = Field(min_length=1)
+
+
+class BloodLastWordsResponse(APIModel):
+    """遗言写入公开频道后的结果。"""
+
+    text: str
+    message: str
+    public_log: list[BloodLogEntryPublic]
+
+
 class BloodGameLogResponse(APIModel):
     """阵营模式回看日志。"""
 
@@ -217,6 +271,13 @@ BLOOD_ERRORS: dict[str, tuple[int, str]] = {
     "target_dead": (409, "这个人已经死了"),
     "target_invalid": (422, "不能选择这个目标"),
     "night_target_required": (422, "你是凶手，必须选择今晚下手的对象"),
+    "confide_used_day": (409, "今天已经密谈过了"),
+    "confide_limit": (409, f"本局最多密谈 {LIMIT_PER_GAME} 次"),
+    "confide_self": (422, "不能与自己密谈"),
+    "confide_text_invalid": (422, "密谈内容为空或过长"),
+    "you_are_alive": (409, "你还在场上，不能留遗言"),
+    "last_words_used": (409, "遗言已经留过了"),
+    "last_words_invalid": (422, "遗言内容为空或过长"),
 }
 
 
@@ -231,6 +292,7 @@ def create_app(
     )
     blood_games = blood_store or BloodStore()
     blood_reply = blood_ai.make_reply_fn(blood_llm)
+    blood_confide = blood_ai.make_confide_fn(blood_llm)
     application = FastAPI(title="雾镇", version="0.1.0")
 
     @application.post(
@@ -340,6 +402,78 @@ def create_app(
             _raise_blood_error("game_not_found")
         return _blood_night_public(state, outcome)
 
+    @application.post(
+        "/blood/games/{game_id}/confide",
+        response_model=BloodConfideResponse,
+    )
+    def confide_blood_game(
+        game_id: str,
+        request: BloodConfideRequest,
+    ) -> BloodConfideResponse:
+        """真人私下找一名 agent 说话，正文只进 private-log。"""
+        outcome = blood.confide(
+            blood_games,
+            game_id,
+            request.target_id,
+            request.text,
+            blood_confide,
+        )
+        _raise_blood_error(outcome.error)
+        return BloodConfideResponse(
+            stance=outcome.stance,
+            reply=outcome.reply,
+            trust=outcome.trust,
+            suspicion=outcome.suspicion,
+            public_line=outcome.public_line,
+        )
+
+    @application.get(
+        "/blood/games/{game_id}/private-log",
+        response_model=BloodPrivateLogResponse,
+    )
+    def get_blood_private_log(game_id: str) -> BloodPrivateLogResponse:
+        """只返回真人自己的密谈记录，含正文。"""
+        state = blood_games.get(game_id)
+        if state is None:
+            _raise_blood_error("game_not_found")
+        return BloodPrivateLogResponse(
+            entries=[
+                BloodPrivateEntryPublic(
+                    day=entry.day,
+                    target_id=entry.target_id,
+                    target_name=entry.target_name,
+                    text=entry.text,
+                    stance=entry.stance,
+                    reply=entry.reply,
+                )
+                for entry in state.private_log
+            ]
+        )
+
+    @application.post(
+        "/blood/games/{game_id}/last-words",
+        response_model=BloodLastWordsResponse,
+    )
+    def last_words_blood_game(
+        game_id: str,
+        request: BloodLastWordsRequest,
+    ) -> BloodLastWordsResponse:
+        """真人出局后留一条遗言，进入公开频道。"""
+        outcome = blood.last_words(
+            blood_games,
+            game_id,
+            request.text,
+        )
+        _raise_blood_error(outcome.error)
+        state = blood_games.get(game_id)
+        if state is None:
+            _raise_blood_error("game_not_found")
+        return BloodLastWordsResponse(
+            text=outcome.text,
+            message=outcome.message,
+            public_log=_blood_log_public(state.public_log),
+        )
+
     @application.get(
         "/blood/games/{game_id}/log",
         response_model=BloodGameLogResponse,
@@ -417,6 +551,7 @@ def _blood_state_public(view: BloodView) -> BloodStateResponse:
         winner=view.winner,
         reveal=_blood_reveal_public(view.reveal),
         aftermath=[dict(item) for item in view.aftermath],
+        day_history=[dict(item) for item in view.day_history],
         you_alive=view.you_alive,
     )
 
@@ -436,6 +571,7 @@ def _blood_talk_public(
         ],
         public_log=_blood_log_public(state.public_log if state else ()),
         phase=outcome.phase,
+        notice=outcome.notice,
     )
 
 

@@ -571,8 +571,8 @@ def test_agent_reason_matches_actual_target(script: Script) -> None:
     assert "阿蘅" not in rewritten[0].reason
 
 
-def test_agent_reason_without_names_is_kept(script: Script) -> None:
-    """理由不含任何人名时保留原句。"""
+def test_agent_reason_without_target_name_uses_fallback(script: Script) -> None:
+    """理由不含 target 姓名时改写成带 target 的兜底句，避免空泛指代。"""
     llm = FakeLLM(text="他刚才的话前后对不上。")
     store, state, reply = _start(script, 3, llm)
     _set_murderer(state, "p2")
@@ -589,7 +589,10 @@ def test_agent_reason_without_names_is_kept(script: Script) -> None:
     )
     outcome = blood.vote(store, state.game_id, "p2", reply)
     p1_vote = next(vote for vote in outcome.votes if vote.voter_id == "p1")
-    assert p1_vote.reason == "他刚才的话前后对不上。"
+    assert "周砚青" in p1_vote.reason
+    assert p1_vote.reason.endswith(("。", "！", "？", "…"))
+    for term in blood.VOTE_REASON_PLACEHOLDERS:
+        assert term not in p1_vote.reason
 
 
 def test_speak_names_two_agents_in_order(script: Script) -> None:
@@ -1170,7 +1173,9 @@ def test_api_vote_returns_reasons_and_threshold(
         "aftermath",
     }
     assert body["threshold"] == 3
-    assert body["aftermath"] == []
+    assert body["aftermath"]
+    assert body["aftermath"][0]["day"] == 1
+    assert body["aftermath"][0]["executed"] is not None
     assert len(body["votes"]) == 6
     for vote in body["votes"]:
         assert set(vote) == {
@@ -1390,7 +1395,7 @@ def test_tie_vote_message_says_tie(script: Script) -> None:
     assert outcome.threshold == 2
     assert outcome.tally == {"p1": 2, "p2": 2}
     assert outcome.executed is None
-    assert outcome.message == "平票，今晚无人被处决"
+    assert outcome.message == "平票，今晚无人被处决；凶手也没敢动手。"
 
 
 def test_below_threshold_message_says_threshold(script: Script) -> None:
@@ -1404,7 +1409,9 @@ def test_below_threshold_message_says_threshold(script: Script) -> None:
     assert outcome.threshold == 3
     assert outcome.executed is None
     assert max(outcome.tally.values()) == 2
-    assert outcome.message == "最高 2 票，未达 3 票门槛，今晚无人被处决"
+    assert outcome.message == (
+        "最高 2 票，未达 3 票门槛，今晚无人被处决；凶手也没敢动手。"
+    )
 
 
 def test_vote_at_threshold_executes(script: Script) -> None:
@@ -1524,3 +1531,520 @@ def test_aftermath_when_you_are_murderer_executed(script: Script) -> None:
     assert outcome.winner == "good"
     assert outcome.reveal is not None
     assert outcome.reveal.murderer_id == "p0"
+
+
+class _FixedRng:
+    """固定掷骰结果，用于让密谈的 accept/跟随稳定可断言。"""
+
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def random(self) -> float:
+        """始终返回预设值。"""
+        return self.value
+
+
+def _confide(
+    store: BloodStore,
+    state: BloodState,
+    target_id: str,
+    text: str,
+    reply_text: str = "这话我记下了，但我不把话说死。",
+) -> blood.ConfideOutcome:
+    confide_fn = blood_ai.make_confide_fn(FakeLLM(text=reply_text))
+    return blood.confide(store, state.game_id, target_id, text, confide_fn)
+
+
+def test_confide_once_per_day_and_three_per_game(script: Script) -> None:
+    """密谈每天 1 次、每局 3 次，超限返回明确错误。"""
+    store, state, _ = _start(script, 3)
+    state.rng = _FixedRng(0.0)  # type: ignore[assignment]
+    first = _confide(store, state, "p1", "廊下风大，你怎么看今晚？")
+    assert first.ok is True
+    assert first.stance in {"accept", "refuse", "evade", "threaten"}
+    same_day = _confide(store, state, "p2", "再问一句。")
+    assert same_day.ok is False
+    assert same_day.error == "confide_used_day"
+
+    state.day = 2
+    assert _confide(store, state, "p2", "第二天再问。").ok is True
+    state.day = 3
+    assert _confide(store, state, "p3", "第三天再问。").ok is True
+    state.day = 4
+    blocked = _confide(store, state, "p4", "第四天还想问。")
+    assert blocked.ok is False
+    assert blocked.error == "confide_limit"
+
+
+def test_confide_private_log_keeps_text_public_log_does_not(
+    api: tuple[TestClient, BloodStore],
+) -> None:
+    """密谈正文只进 private-log，公开日志只留一句旁白。"""
+    client, store = api
+    game_id = client.post("/blood/games").json()["game_id"]
+    assert client.post(f"/blood/games/{game_id}/discuss").status_code == 200
+    text = "我想提陆明川，你若肯跟我同票，明天我保你不上桌。"
+    response = client.post(
+        f"/blood/games/{game_id}/confide",
+        json={"target_id": "p1", "text": text},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {
+        "stance",
+        "reply",
+        "trust",
+        "suspicion",
+        "public_line",
+    }
+    assert body["public_line"] == "你与沈玉兰在廊下低声说了几句。"
+
+    private = client.get(f"/blood/games/{game_id}/private-log").json()
+    assert len(private["entries"]) == 1
+    entry = private["entries"][0]
+    assert entry["text"] == text
+    assert entry["reply"]
+    assert entry["target_name"] == "沈玉兰"
+
+    state = store.get(game_id)
+    assert state is not None
+    public_text = "".join(item.text for item in state.public_log)
+    assert "低声说了几句" in public_text
+    assert text not in public_text
+    assert entry["reply"] != ""
+
+    logs = client.get(f"/blood/games/{game_id}/log").json()["entries"]
+    confide_logs = [item for item in logs if item["type"] == "confide"]
+    assert confide_logs
+    assert "text" not in confide_logs[0]
+    assert confide_logs[0]["target_id"] == "p1"
+
+
+def test_confide_accept_raises_trust_and_follow(script: Script) -> None:
+    """承诺保护/结盟时进入 accept，提升 trust 与 follow_prob，并在投票中跟随。"""
+    store, state, reply = _start(script, 3)
+    state.rng = _FixedRng(0.0)  # type: ignore[assignment]
+    _set_murderer(state, "p2")
+    target = next(player for player in state.players if player.id == "p1")
+    before_trust = target.trust
+    before_suspicion = target.suspicion.get("p0", 0.0)
+    outcome = _confide(
+        store,
+        state,
+        "p1",
+        "我会保护你，我们一起投陆明川，你别把票投我。",
+    )
+    assert outcome.ok is True
+    assert outcome.stance == "accept"
+    assert outcome.trust > before_trust
+    assert outcome.suspicion < int(round(before_suspicion * 100))
+    assert target.follow_prob > 0.0
+
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p2",
+            "p3": "p2",
+            "p4": "p2",
+            "p5": "p2",
+        },
+    )
+    voted = blood.vote(store, state.game_id, "p4", reply)
+    p1_vote = next(vote for vote in voted.votes if vote.voter_id == "p1")
+    assert p1_vote.target_id == "p4"
+
+
+def test_confide_threaten_raises_suspicion(script: Script) -> None:
+    """威胁类密谈提高目标对真人的怀疑，且不提升跟随。"""
+    store, state, _ = _start(script, 3)
+    state.rng = _FixedRng(0.0)  # type: ignore[assignment]
+    target = next(player for player in state.players if player.id == "p1")
+    before = target.suspicion.get("p0", 0.0)
+    outcome = _confide(
+        store,
+        state,
+        "p1",
+        "你不投我，我就把你的事捅出去，你会后悔的。",
+    )
+    assert outcome.ok is True
+    assert outcome.stance == "threaten"
+    assert target.suspicion.get("p0", 0.0) > before
+    assert target.follow_prob == 0.0
+
+
+def test_confide_betray_drops_trust_and_queues_retaliation(
+    script: Script,
+) -> None:
+    """口头应下但准备背叛时，trust -15、suspicion +10，并排队反噬。"""
+    class SeqRng:
+        def __init__(self) -> None:
+            self.values = iter([0.9, 0.0])
+
+        def random(self) -> float:
+            return next(self.values, 0.0)
+
+    store, state, _ = _start(script, 3)
+    state.rng = SeqRng()  # type: ignore[assignment]
+    target = next(player for player in state.players if player.id == "p1")
+    before_trust = target.trust
+    before_suspicion = target.suspicion.get("p0", 0.0)
+    outcome = _confide(
+        store,
+        state,
+        "p1",
+        "我保你不上桌，你跟我一起投陆明川。",
+    )
+    assert outcome.ok is True
+    assert outcome.stance == "accept"
+    assert target.trust == blood.BETRAY_TRUST_DELTA + before_trust
+    assert target.suspicion.get("p0", 0.0) > before_suspicion
+    assert target.follow_prob == 0.0
+    assert state.pending_leaks[target.id] == blood.CONFIDE_BETRAY_LINE
+
+
+def test_confide_leak_is_capped_and_scrubs_new_names(script: Script) -> None:
+    """泄露只复述玩家原话 20 字以内，不新增未出场人物。"""
+    store, state, _ = _start(script, 3)
+    player = next(item for item in state.players if item.id == "p1")
+    state.pending_leaks[player.id] = "老赵说那枚铜纽扣是他掉的，还提了个叫小翠的人。"
+    leak = blood._consume_leak(state, player)
+    assert leak
+    assert "老赵" not in leak
+    assert "小翠" not in leak
+    quote = leak.split("「", 1)[1].split("」", 1)[0]
+    assert len(quote) <= blood.LEAK_QUOTE_MAX_CHARS
+    assert "铜纽扣" in quote
+
+
+def test_confide_leak_reaches_public_speech_once(script: Script) -> None:
+    """泄露会在目标下一次公开发言里出现一次，且不复述正文全文。"""
+    store, state, reply = _start(script, 3)
+    player = next(item for item in state.players if item.id == "p1")
+    text = "老赵说那枚铜纽扣是他掉的，还提了个叫小翠的人。"
+    state.pending_leaks[player.id] = text
+    blood.discuss(store, state.game_id, reply)
+    public = "".join(entry.text for entry in state.public_log)
+    assert "私下说" in public
+    assert "老赵" not in public
+    assert "小翠" not in public
+    assert text not in public
+
+
+def test_vote_reason_quote_must_come_from_target_same_day(
+    script: Script,
+) -> None:
+    """把别人的话安到 target 头上时，必须改用不含该引文的兜底理由。"""
+
+    class VoteLLM(FakeLLM):
+        def complete(self, system_prompt: str, user_prompt: str) -> str:
+            if "现在投票" in user_prompt:
+                return "我投沈玉兰，她说“我整晚在楼梯口，没上过二楼”。"
+            return "我只说看见的，别的不好接。"
+
+    store, state, reply = _start(script, 3, VoteLLM())
+    _set_murderer(state, "p2")
+    state.public_log.append(
+        blood.BloodLogEntry(
+            seq=len(state.public_log) + 1,
+            speaker_id="p1",
+            speaker_name="沈玉兰",
+            text="我在后廊给过他一点钱，没人替我作证。",
+            day=1,
+        )
+    )
+    state.public_log.append(
+        blood.BloodLogEntry(
+            seq=len(state.public_log) + 1,
+            speaker_id="p2",
+            speaker_name="周砚青",
+            text="我整晚在楼梯口，没上过二楼。",
+            day=1,
+        )
+    )
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p1",
+            "p4": "p1",
+            "p5": "p1",
+        },
+    )
+    outcome = blood.vote(store, state.game_id, "p1", reply)
+    for vote in outcome.votes:
+        if vote.voter_id == "p0" or vote.target_id != "p1":
+            continue
+        assert "周砚青" not in vote.reason
+        assert "楼梯口" not in vote.reason
+        assert "沈玉兰" in vote.reason
+        assert len(vote.reason) <= blood.BLOOD_VOTE_REASON_MAX_CHARS
+        assert vote.reason[-1] in blood.SENTENCE_ENDS
+        for term in blood.VOTE_REASON_PLACEHOLDERS:
+            assert term not in vote.reason
+
+
+def test_vote_reason_hard_cut_removed(script: Script) -> None:
+    """超过 80 字的理由要收在句末，不留半句话，也不加占位符。"""
+    long_reason = "我投周砚青，" + "他每回说到时辰就绕开，我听着实在不像实话，" * 6
+    store, state, reply = _start(script, 3, FakeLLM(text=long_reason))
+    _set_murderer(state, "p2")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p2",
+            "p4": "p2",
+            "p5": "p2",
+        },
+    )
+    outcome = blood.vote(store, state.game_id, "p2", reply)
+    for vote in outcome.votes:
+        if vote.voter_id == "p0" or vote.target_id != "p2":
+            continue
+        assert len(vote.reason) <= blood.BLOOD_VOTE_REASON_MAX_CHARS
+        assert vote.reason[-1] in blood.SENTENCE_ENDS
+        assert "某人" not in vote.reason
+        assert "周砚青" in vote.reason
+
+
+def test_day_history_starts_day_one_with_execution_night_and_tie(
+    script: Script,
+) -> None:
+    """卷宗从第 1 天起记录处决与夜杀；第 2 天平票也单独成条。"""
+    store, state, reply = _start(script, 3)
+    _set_murderer(state, "p2")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p1",
+            "p4": "p1",
+            "p5": "p1",
+        },
+    )
+    first = blood.vote(store, state.game_id, "p1", reply)
+    assert first.executed is not None and first.executed.id == "p1"
+    assert first.day_history[0]["day"] == 1
+    assert first.day_history[0]["executed"] == {"id": "p1", "name": "沈玉兰"}
+
+    killer = next(player for player in state.players if player.id == "p2")
+    killer.suspicion = {"p3": 0.9}
+    after_night = blood.night(store, state.game_id, None)
+    assert after_night.killed is not None and after_night.killed.id == "p3"
+    assert after_night.day_history[0]["killed"] == {"id": "p3", "name": "阿蘅"}
+    assert "夜里" in after_night.day_history[0]["note"]
+
+    _enter_defense(store, state, reply, "p4")
+    _force_votes(
+        state,
+        {
+            "p2": "p4",
+            "p4": "p2",
+            "p5": "p4",
+        },
+    )
+    tie = blood.vote(store, state.game_id, "p2", reply)
+    assert tie.tally == {"p2": 2, "p4": 2}
+    assert tie.executed is None
+    assert tie.day_history[1]["day"] == 2
+    assert tie.day_history[1]["stalemate"] is True
+    assert tie.day_history[1]["executed"] is None
+
+    stalled = blood.night(store, state.game_id, None)
+    assert stalled.killed is None
+    assert stalled.day == 3
+    assert stalled.day_history[1]["killed"] is None
+    assert "凶手也没敢动手" in stalled.day_history[1]["note"]
+    assert state.aftermath == state.day_history
+
+
+def test_tie_night_kills_nobody(script: Script) -> None:
+    """平票的当夜凶手不得杀人，天亮直接进入下一天。"""
+    store, state, reply = _start(script, 3)
+    _set_murderer(state, "p2")
+    _enter_defense(store, state, reply, "p1")
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p2",
+            "p4": "p1",
+            "p5": "p2",
+        },
+    )
+    outcome = blood.vote(store, state.game_id, "p1", reply)
+    assert outcome.executed is None
+    assert outcome.phase == "night"
+    killer = next(player for player in state.players if player.id == "p2")
+    killer.suspicion = {"p3": 0.9}
+    night = blood.night(store, state.game_id, None)
+    assert night.ok is True
+    assert night.killed is None
+    assert night.day == 2
+    assert night.phase == "discussion"
+    assert all(player.alive for player in state.players)
+
+
+def test_long_you_speech_keeps_last_sentence(script: Script) -> None:
+    """真人发言超长时截到句末，并在 notice 里明确提示。"""
+    store, state, reply = _start(script, 3)
+    long_text = (
+        "我先把话说明白。"
+        + "每个人都要交代清楚自己那晚在哪里、做了什么。"
+        * 10
+    )
+    outcome = blood.speak(store, state.game_id, long_text, reply)
+    assert outcome.ok is True
+    assert outcome.notice == "发言过长，已保留到最后一个句号。"
+    you_entry = next(
+        entry
+        for entry in reversed(state.public_log)
+        if entry.speaker_id == "p0"
+    )
+    assert len(you_entry.text) <= blood.BLOOD_MAX_LINE_CHARS
+    assert you_entry.text.endswith("。")
+    assert long_text.startswith(you_entry.text)
+
+
+def test_api_long_speech_returns_notice(
+    api: tuple[TestClient, BloodStore],
+) -> None:
+    """接口层也返回超长发言提示，不静默截断。"""
+    client, _ = api
+    game_id = client.post("/blood/games").json()["game_id"]
+    body = client.post(
+        f"/blood/games/{game_id}/speak",
+        json={"text": "我先说。" + "这句很长的话需要被保留到句末。" * 10},
+    ).json()
+    assert body["notice"] == "发言过长，已保留到最后一个句号。"
+    assert body["public_log"][-1]["text"].endswith("。") or any(
+        entry["speaker_id"] == "p0" and entry["text"].endswith("。")
+        for entry in body["public_log"]
+    )
+
+
+def test_last_words_once_after_you_die(
+    api: tuple[TestClient, BloodStore],
+) -> None:
+    """真人活着不能留遗言；出局后可留 1 条，进入公开日志。"""
+    client, store = api
+    game_id = client.post("/blood/games").json()["game_id"]
+    alive = client.post(
+        f"/blood/games/{game_id}/last-words",
+        json={"text": "我还没死。"},
+    )
+    assert alive.status_code == 409
+
+    state = store.get(game_id)
+    assert state is not None
+    state.players[0].alive = False
+    first = client.post(
+        f"/blood/games/{game_id}/last-words",
+        json={"text": "我怀疑周砚青，他一直在绕开时辰。"},
+    )
+    assert first.status_code == 200
+    assert first.json()["text"] in first.json()["public_log"][-1]["text"]
+    second = client.post(
+        f"/blood/games/{game_id}/last-words",
+        json={"text": "再说一句。"},
+    )
+    assert second.status_code == 409
+
+
+def test_confide_prompt_forbids_evidence_endorsement(script: Script) -> None:
+    """密谈提示词明确禁止为玩家声称的物证补充存在性。"""
+    _, state, _ = _start(script, 12)
+    player = next(item for item in state.players if item.id == "p2")
+    system, user = blood_ai.build_confide_prompt(
+        player,
+        state,
+        "我在门槛上捡到一枚刻着周字的铜纽扣。",
+        "refuse",
+    )
+    assert "物证" in system
+    assert "未出场" in system
+    assert "不得承认它存在" in system
+    assert "铜纽扣" in user
+
+
+def test_confide_reply_does_not_endorse_players_evidence(
+    script: Script,
+) -> None:
+    """agent 用自己的记忆替玩家编的物证背书时，私下回复要退回模板。"""
+    store, state, _ = _start(script, 3)
+    state.rng = _FixedRng(0.0)  # type: ignore[assignment]
+    outcome = _confide(
+        store,
+        state,
+        "p1",
+        "我在门槛上捡到一枚铜纽扣，你认得吗？",
+        reply_text="我认得那枚纽扣，周砚青衣襟上确实少过一颗。",
+    )
+    assert outcome.ok is True
+    assert "我认得" not in outcome.reply
+    assert "少过一颗" not in outcome.reply
+
+
+def test_full_flow_confide_private_log_tie_stalemate(
+    api: tuple[TestClient, BloodStore],
+) -> None:
+    """真实链路：讨论 → 密谈 → 提名 → 平票 → 僵局夜 → 逐日卷宗。"""
+    client, store = api
+    game_id = client.post("/blood/games").json()["game_id"]
+    assert client.post(f"/blood/games/{game_id}/discuss").status_code == 200
+
+    confided = client.post(
+        f"/blood/games/{game_id}/confide",
+        json={"target_id": "p1", "text": "今晚我会提沈玉兰，你怎么看？"},
+    )
+    assert confided.status_code == 200
+    private = client.get(f"/blood/games/{game_id}/private-log").json()
+    assert private["entries"][0]["text"] == "今晚我会提沈玉兰，你怎么看？"
+    state = store.get(game_id)
+    assert state is not None
+    assert "低声说了几句" in state.public_log[-1].text
+
+    assert (
+        client.post(
+            f"/blood/games/{game_id}/nominate",
+            json={"target_id": "p1"},
+        ).status_code
+        == 200
+    )
+    _force_votes(
+        state,
+        {
+            "p1": "p2",
+            "p2": "p1",
+            "p3": "p2",
+            "p4": "p1",
+            "p5": "p2",
+        },
+    )
+    voted = client.post(
+        f"/blood/games/{game_id}/vote",
+        json={"target_id": "p1"},
+    )
+    assert voted.status_code == 200
+    assert voted.json()["executed"] is None
+    assert voted.json()["phase"] == "night"
+
+    night = client.post(f"/blood/games/{game_id}/night", json={})
+    assert night.status_code == 200
+    assert night.json()["killed"] is None
+    assert night.json()["day"] == 2
+
+    view = client.get(f"/blood/games/{game_id}").json()
+    assert view["day_history"][0]["day"] == 1
+    assert view["day_history"][0]["tally"] == {"p1": 3, "p2": 3}
+    assert view["day_history"][0]["stalemate"] is True
+    assert view["day_history"] == view["aftermath"]
