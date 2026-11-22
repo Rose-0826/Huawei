@@ -1,9 +1,9 @@
-# 雾镇 · AI 原生推理桌游
+# 雾镇 · 电子血染
 
 > 北京邮电大学第一届人机协作编程大赛 参赛作品
-> MVP v0.1 —— 单人侦探视角的 AI 推理桌游
+> MVP v0.1 —— 1 名真人 + 5 个 AI agent 的社交推理桌游
 
-**每个 NPC 只知道一部分真相。有人撒谎，有人只是记错了。**
+**白天公开讨论、提名与投票，夜晚有人下手。谁是混在住客里的凶手？**
 
 ## 最快跑起来（Mock，不需要密钥）
 
@@ -44,8 +44,10 @@ set MOCK_LLM=1 && python -m app.main
 打开：
 
 ```text
-http://127.0.0.1:8000/
+http://127.0.0.1:8000/blood
 ```
+
+根路径 `http://127.0.0.1:8000/` 会 307 跳转到 `/blood`。
 
 接口文档：
 
@@ -53,7 +55,7 @@ http://127.0.0.1:8000/
 http://127.0.0.1:8000/docs
 ```
 
-`MOCK_LLM=1` 时不会请求真实模型，台词是固定文案，但检索、决策、压力、线索解锁、指认结算整条链路都会真实运行。
+`MOCK_LLM=1` 时不会请求真实模型，台词是固定文案，但开局、讨论、提名、自辩、投票、处决、夜晚与胜负结算整条链路都会真实运行。
 
 ## 配置真实模型
 
@@ -148,17 +150,10 @@ python -m pytest -q
 当前结果：
 
 ```text
-177 passed, 1 skipped
+99 passed, 1 skipped
 ```
 
-`tests/test_regression.py` 里有 31 条回归用例，专门固化已经踩过的坑，包括：
-
-- 阿蘅压力 0 被问目击时，回答不能出现书房、出来、袖、灰、23:00
-- 周砚青说的是他记错的 23:10，不是客观的 22:45
-- 同一张线索对同一 NPC 第二次出示必须 409
-- 出示两张线索后，阿蘅必须改口
-- 模型不可用时只调用一次就模板兜底
-- 物证只对持有者可见、裸中文数字不误判、主题值域非法会被拦
+测试覆盖阵营模式的边界与越权：凶手身份只返回给真人、出局者不能操作、发言与质证次数上限、投票门槛与平票、夜晚目标必填、模型不可用时模板兜底，以及公开日志与回看日志不泄露秘密。
 
 真实模型用例单独标记，默认跳过；只有显式开启才会跑：
 
@@ -182,7 +177,7 @@ docker build -t mistvale .
 docker run --rm -p 8000:8000 mistvale
 ```
 
-打开 `http://127.0.0.1:8000/`。
+打开 `http://127.0.0.1:8000/blood`（`/` 会跳转到这里）。
 
 真实模型：
 
@@ -195,17 +190,22 @@ docker run --rm -p 8000:8000 \
 
 更完整的部署步骤、裸机部署、换剧本挂载和排障见 [DEPLOY.md](DEPLOY.md)。
 
-## 五个接口
+## 接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/games` | 开始一局 |
-| POST | `/games/{game_id}/ask` | 向某个嫌疑人提问 |
-| POST | `/games/{game_id}/clues` | 出示已解锁线索，压力 +0.25 |
-| GET | `/games/{game_id}` | 查公开状态 |
-| POST | `/games/{game_id}/accuse` | 指认并进入结算 |
+| GET | `/` | 307 跳转到 `/blood` |
+| GET | `/blood` | 电子血染页面 |
+| POST | `/blood/games` | 开始一局，1 真人 + 5 agent，随机一名凶手 |
+| GET | `/blood/games/{game_id}` | 查公开状态 |
+| POST | `/blood/games/{game_id}/discuss` | 全体存活 agent 各说一句 |
+| POST | `/blood/games/{game_id}/speak` | 真人公开发言，一名 agent 回应 |
+| POST | `/blood/games/{game_id}/nominate` | 提名处决目标并触发自辩 |
+| POST | `/blood/games/{game_id}/vote` | 全体投票，达到门槛才处决 |
+| POST | `/blood/games/{game_id}/night` | 夜晚结算 |
+| GET | `/blood/games/{game_id}/log` | 回看日志，不含秘密字段 |
 
-对玩家可见的响应不会包含 `culprit`、`secret` 或事实原文；指认结算时才返回真相时间线，漏掉的破案链只返回编号。
+凶手身份、队友与私有事实只返回给真人；公开日志和回看日志不含秘密，终局才揭晓凶手。
 
 ## 项目结构
 
@@ -218,22 +218,18 @@ docker run --rm -p 8000:8000 \
 │   └── 03_码道开发剧本.md  分 7 段的码道 Prompt，逐段复制执行
 ├── project/
 │   ├── app/
-│   │   ├── main.py          FastAPI 适配层、静态页挂载
-│   │   ├── game.py          内存局状态机
+│   │   ├── main.py          FastAPI 适配层、血染路由、静态页挂载
+│   │   ├── blood.py         电子血染状态机（讨论/提名/投票/夜晚/胜负）
+│   │   ├── blood_ai.py      agent 发言与投票理由生成
 │   │   ├── llm.py           唯一网络请求层
 │   │   ├── models.py        pydantic 剧本模型
 │   │   ├── script_loader.py 加载/校验/概况 CLI
-│   │   ├── config.py        检索、决策、模型阈值
-│   │   └── engine/
-│   │       ├── intent.py    关键词意图解析
-│   │       ├── retrieval.py 知识边界检索
-│   │       ├── policy.py    disclose / evade / lie / unparsed
-│   │       ├── composer.py  唯一调用 LLM 的 engine 模块
-│   │       └── verifier.py  时间、数字、秘密、长度校验
+│   │   ├── config.py        血染阈值与模型参数
+│   │   └── engine/          预留包（当前仅 __init__.py）
 │   ├── data/
 │   │   ├── scripts/mistvale-inn.json   剧本《雾镇旅馆》
-│   │   └── regression/questions.json  一致性回归问题
-│   ├── tests/               单元测试与回归测试
+│   │   └── regression/questions.json  历史回归问题数据
+│   ├── tests/               血染、模型、剧本、真模型测试
 │   ├── web/                 原生前端
 │   ├── tools/check_maas.py  MaaS 连通性自检
 │   ├── conftest.py          真模型用例默认跳过

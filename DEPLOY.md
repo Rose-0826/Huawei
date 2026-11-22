@@ -1,6 +1,6 @@
 # 部署与复现
 
-目标：从一台空机器开始，到浏览器里能打开「雾镇旅馆」。
+目标：从一台空机器开始，到浏览器里能打开「雾镇」电子血染页面。
 
 有两条路：
 
@@ -43,8 +43,10 @@ docker run --rm -p 8000:8000 mistvale
 浏览器打开：
 
 ```text
-http://127.0.0.1:8000/
+http://127.0.0.1:8000/blood
 ```
+
+根路径 `http://127.0.0.1:8000/` 会 307 跳转到 `/blood`。
 
 接口文档：
 
@@ -164,7 +166,7 @@ Windows 激活方式：
 MOCK_LLM=1 python -m app.main
 ```
 
-打开 `http://127.0.0.1:8000/`。
+打开 `http://127.0.0.1:8000/blood`（`/` 会跳转到这里）。
 
 ### 服务器启动（外部浏览器访问）
 
@@ -177,7 +179,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 然后放行防火墙 / 云安全组的 8000 端口，用浏览器打开：
 
 ```text
-http://服务器IP:8000/
+http://服务器IP:8000/blood
 ```
 
 ### 真实模型
@@ -233,17 +235,18 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ```bash
 curl -I http://127.0.0.1:8000/
+curl -I http://127.0.0.1:8000/blood
 ```
 
-应返回 `200 OK`。
+第一条应返回 `307` 且 `Location: /blood`，第二条应返回 `200 OK`。
 
 接口：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/games
+curl -X POST http://127.0.0.1:8000/blood/games
 ```
 
-应返回 `game_id`、`title`、`opening`、`roles` 等公开字段。
+应返回 `game_id`、`day`、`phase`、`players`、`you` 等公开字段。
 
 测试：
 
@@ -252,7 +255,7 @@ cd project
 python -m pytest -q
 ```
 
-应看到 `177 passed, 1 skipped`。真模型冒烟测试默认跳过；显式开启：
+应看到 `99 passed, 1 skipped`。真模型冒烟测试默认跳过；显式开启：
 
 ```bash
 RUN_REAL_MODEL=1 python -m pytest -q -m real_model
@@ -267,7 +270,7 @@ RUN_REAL_MODEL=1 python -m pytest -q -m real_model
 - Docker 必须做端口映射 `-p 8000:8000`。
 - 云服务器检查安全组是否放行 8000。
 
-### 提问返回 500
+### 讨论或投票返回 500
 
 - 没设 `MOCK_LLM=1`，也没配齐 `MAAS_*`。
 - 先设 `MOCK_LLM=1` 跑通链接，再配置真实模型。
@@ -281,9 +284,9 @@ RUN_REAL_MODEL=1 python -m pytest -q -m real_model
 
 确认 `project/web/` 存在，启动目录是 `project/`。Docker 镜像会自动带上。
 
-### 出示线索返回 409
+### 重复操作返回 409
 
-这是预期行为：同一张线索对同一个 NPC 只能出示一次。前端用 toast 提示，不是系统错误。
+这是预期行为：同一天重复讨论、重复提名，或对已出局者操作，都会返回 409。前端用提示条说明，不是系统错误。
 
 ### 一局突然没了
 
@@ -395,11 +398,12 @@ sudo nginx -t && sudo systemctl reload nginx
 ## 6. 验证
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://服务器IP/
-curl -s -X POST http://服务器IP/games | head -c 200
+curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" http://服务器IP/
+curl -s -o /dev/null -w "%{http_code}\n" http://服务器IP/blood
+curl -s -X POST http://服务器IP/blood/games | head -c 200
 ```
 
-两条都该是 `200` 和一段 JSON。然后用**手机流量**打开一次（不要用校园网），确认外网真的能访问。
+第一条该是 `307` 并指向 `/blood`，第二条该是 `200`，第三条是一段 JSON。然后用**手机流量**打开一次（不要用校园网），确认外网真的能访问。
 
 ## 7. 常见坑
 
