@@ -32,10 +32,26 @@
     "杀手": "凶手胜",
   };
 
+  const CONFIDE_PER_DAY = 1;
+  const CONFIDE_PER_GAME = 3;
+  const SPEAK_MAX_CHARS = 200;
+  const SPEAK_SOURCE_MAX = 600;
+
+  const STANCE_LABEL = {
+    accept: "接下了话",
+    refuse: "回绝了",
+    evade: "把话绕开",
+    threaten: "反压一句",
+    promise: "许了个诺",
+    betray: "没给准话",
+    neutral: "不动声色",
+  };
+
   const state = {
     mock: params.get("mock") === "1",
     mockCase: params.get("case") || "",
     mockVotesCast: 0,
+    mockLastVoteTie: false,
     game: null,
     gameId: null,
     you: null,
@@ -49,6 +65,8 @@
     bubbleTimer: 0,
     lastVotes: null,
     voteResult: null,
+    lastVoteResult: null,
+    voteHeld: false,
     defense: null,
     nominated: null,
     ballotTargetId: null,
@@ -61,6 +79,20 @@
     revealName: "",
     pending: null,
     drawerOpen: false,
+    drawerTab: "public",
+    localEvents: [],
+    privateLog: [],
+    confideOpen: false,
+    confideTargetId: null,
+    confideReply: null,
+    confideUsedToday: 0,
+    confideUsedTotal: 0,
+    confideDay: 1,
+    confideSnapshots: {},
+    speakLimitNotice: "",
+    userScrolled: false,
+    endPending: false,
+    endRevealed: false,
   };
 
   function node(tag, className, text) {
@@ -185,9 +217,15 @@
       .trim();
   }
 
-  function sanitizeReason(text) {
-    return stripDanglingMemory(text)
+  function sanitizeReason(text, targetName = "") {
+    const cleaned = stripDanglingMemory(text)
       .replace(/[，,、；;：:\s]+$/u, "")
+      .trim();
+    if (!cleaned) {
+      return "";
+    }
+    return cleaned
+      .replace(/某人|某某|该玩家|某个玩家/gu, targetName || "他")
       .trim();
   }
 
@@ -425,9 +463,10 @@ state.selectedId = null;
     state.nominationMode = false;
     state.ballotTargetId = null;
     state.ballotReason = "";
-    state.lastVotes = null;
-      state.voteResult = null;
-      state.defense = null;
+state.lastVotes = null;
+    state.voteResult = null;
+    state.lastVoteResult = null;
+    state.defense = null;
       state.nominated = null;
       state.ballotTargetId = null;
       state.ballotReason = "";
@@ -435,6 +474,20 @@ state.selectedId = null;
       state.reportKind = "info";
       state.speakingId = null;
       state.pending = null;
+      state.voteHeld = false;
+      state.endPending = false;
+      state.endRevealed = false;
+      state.confideOpen = false;
+      state.confideReply = null;
+      state.confideTargetId = null;
+      state.confideUsedToday = 0;
+      state.confideUsedTotal = 0;
+      state.confideDay = 1;
+      state.confideSnapshots = {};
+      state.privateLog = [];
+      state.localEvents = [];
+      state.userScrolled = false;
+      state.drawerTab = "public";
       clearBubble();
       closeConfirm();
     }
@@ -470,8 +523,11 @@ state.selectedId = null;
       message: typeof data.message === "string" ? data.message : (previous.message || ""),
       reveal: data.reveal !== undefined ? data.reveal : (previous.reveal || null),
       aftermath: data.aftermath !== undefined
-        ? normalizeAftermath(data.aftermath)
+        ? normalizeDayHistory(data.aftermath)
         : (options.reset ? [] : (previous.aftermath || [])),
+      day_history: data.day_history !== undefined
+        ? normalizeDayHistory(data.day_history)
+        : (previous.day_history || []),
       you_alive: data.you_alive !== undefined
         ? Boolean(data.you_alive)
         : (previous.you_alive === undefined ? null : previous.you_alive),
@@ -504,6 +560,9 @@ state.selectedId = null;
     }
 
     captureReveal(data);
+    if (data.winner && !state.endRevealed) {
+      state.endPending = true;
+    }
 
     if (typeof data.message === "string" && data.message) {
       showReport(data.message, data.winner ? "good" : "info");
@@ -598,6 +657,9 @@ state.selectedId = null;
           day: Math.max(1, Number(item.day) || 1),
           executed: normalizePerson(item.executed),
           killed: normalizePerson(item.killed),
+          tie: Boolean(item.tie || item.tied),
+          tally: normalizeTally(item.tally || []),
+          threshold: Number(item.threshold) || 0,
           note: String(item.note || ""),
         };
       })
@@ -706,16 +768,27 @@ state.selectedId = null;
   }
 
   function render() {
+    syncConfideDay();
     renderIdentity();
     renderHeader();
     renderSeats();
     appendLogEntries();
     renderDefense();
     renderVoteBoard();
+    renderConfide();
     renderBallot();
     renderActionBar();
     renderReport();
     renderEnd();
+    stickDiscussionToBottom();
+  }
+
+  function syncConfideDay() {
+    const day = state.game ? state.game.day : 1;
+    if (state.confideDay !== day) {
+      state.confideDay = day;
+      state.confideUsedToday = 0;
+    }
   }
 
   function renderIdentity() {
@@ -945,7 +1018,6 @@ state.selectedId = null;
     const list = $("discussion-list");
     const log = (state.game && state.game.public_log) || [];
     const scroll = $("discussion-scroll");
-    const nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 120;
     $("discussion-empty").classList.toggle("hidden", log.length > 0);
 
     const fresh = log.filter((entry) => entry.seq > state.lastSeq);
@@ -963,7 +1035,7 @@ state.selectedId = null;
     state.lastSeq = Math.max(state.lastSeq, maxSeq(fresh));
     updateDiscussionCount();
 
-    if (nearBottom || fresh.length >= log.length) {
+    if (!state.userScrolled) {
       scroll.scrollTop = scroll.scrollHeight;
     }
 
@@ -973,6 +1045,21 @@ state.selectedId = null;
     if (lastSpeakable) {
       showBubble(lastSpeakable);
     }
+  }
+
+  function stickDiscussionToBottom() {
+    if (state.userScrolled) {
+      return;
+    }
+    const scroll = $("discussion-scroll");
+    if (!scroll) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      if (!state.userScrolled) {
+        scroll.scrollTop = scroll.scrollHeight;
+      }
+    });
   }
 
   function updateDiscussionCount() {
@@ -1083,14 +1170,26 @@ state.selectedId = null;
       .sort((left, right) => right.count - left.count);
   }
 
+  function voteBoardVisible() {
+    if (!state.game || !state.voteResult) {
+      return false;
+    }
+    if (currentPhase() === "night" && !state.voteHeld) {
+      return false;
+    }
+    return true;
+  }
+
   function renderVoteBoard() {
     const board = $("vote-board");
     const result = state.voteResult;
     const discussion = board.closest(".discussion");
+    const visible = voteBoardVisible();
     if (discussion) {
-      discussion.classList.toggle("voting", Boolean(state.game && result));
+      discussion.classList.toggle("voting", visible);
     }
-    if (!state.game || !result) {
+    document.body.dataset.voting = visible ? "1" : "0";
+    if (!state.game || !result || !visible) {
       board.classList.add("hidden");
       board.textContent = "";
       return;
@@ -1112,8 +1211,8 @@ state.selectedId = null;
     if (threshold) {
       title.append(node(
         "span",
-        `vote-threshold${short || tied ? " short" : ""}`,
-        `已投 ${votes.length} / 需 ${threshold} 票`,
+        `vote-threshold${tied ? " tie" : (short ? " short" : "")}`,
+        `共 ${votes.length} 票 · 门槛 ${threshold}`,
       ));
     }
     board.append(title);
@@ -1265,6 +1364,367 @@ state.selectedId = null;
     }
   }
 
+  function confideCandidates() {
+    return players().filter((player) => player.alive !== false && !player.is_you);
+  }
+
+  function confideRemainingToday() {
+    return Math.max(0, CONFIDE_PER_DAY - state.confideUsedToday);
+  }
+
+  function confideRemainingTotal() {
+    return Math.max(0, CONFIDE_PER_GAME - state.confideUsedTotal);
+  }
+
+  function canConfide() {
+    if (!state.game || state.busy || isFinished() || !youAlive()) {
+      return false;
+    }
+    const phase = currentPhase();
+    if (phase !== "discussion" && phase !== "defense") {
+      return false;
+    }
+    return confideRemainingToday() > 0
+      && confideRemainingTotal() > 0
+      && confideCandidates().length > 0;
+  }
+
+  function confideCountText() {
+    if (!state.game) {
+      return "今日还剩 1 次 · 本局还剩 3 次";
+    }
+    const today = confideRemainingToday();
+    const total = confideRemainingTotal();
+    return `今日还剩 ${today} 次 · 本局还剩 ${total} 次`;
+  }
+
+  function renderConfide() {
+    const panel = $("confide-panel");
+    const discussion = panel.closest(".discussion");
+    const active = Boolean(state.game) && state.confideOpen
+      && !isFinished() && youAlive() && confideCandidates().length > 0;
+    if (discussion) {
+      discussion.classList.toggle("confiding", active);
+    }
+    if (!active) {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+    const hasReply = Boolean(state.confideReply);
+    panel.classList.toggle("has-reply", hasReply);
+    $("confide-count").textContent = confideCountText();
+
+    const remaining = confideRemainingToday() > 0 && confideRemainingTotal() > 0;
+    $("confide-lede").textContent = hasReply
+      ? "廊下只剩你们两个。"
+      : (remaining
+        ? "把声音压低，只让一个人听见。公开的桌上只会留下一句「低声说了几句」。"
+        : "今天的话已经说尽了，明晚再来廊下。");
+
+    const targets = $("confide-targets");
+    const candidates = confideCandidates();
+    if (!candidates.some((player) => player.id === state.confideTargetId)) {
+      state.confideTargetId = candidates[0] ? candidates[0].id : null;
+    }
+    const signature = candidates
+      .map((player) => `${player.id}:${player.name}:${player.id === state.confideTargetId ? 1 : 0}`)
+      .join("|");
+    if (targets.dataset.sig !== signature) {
+      targets.textContent = "";
+      for (const player of candidates) {
+        const chip = node("button", "confide-target");
+        chip.type = "button";
+        chip.dataset.targetId = player.id;
+        chip.setAttribute("aria-pressed", player.id === state.confideTargetId ? "true" : "false");
+        chip.append(node("span", "confide-target-name", player.name));
+        chip.addEventListener("click", () => {
+          if (state.busy) {
+            return;
+          }
+          state.confideTargetId = player.id;
+          targets.dataset.sig = "";
+          renderConfide();
+          updateConfideSend();
+        });
+        targets.append(chip);
+      }
+      targets.dataset.sig = signature;
+    }
+
+    const input = $("confide-input");
+    if (input && !remaining) {
+      input.disabled = true;
+    } else if (input) {
+      input.disabled = Boolean(state.busy);
+    }
+    updateConfideSend();
+    renderConfideReply();
+  }
+
+  function updateConfideSend() {
+    const button = $("confide-send");
+    const input = $("confide-input");
+    if (!button || !input) {
+      return;
+    }
+    const usable = canConfide()
+      && Boolean(state.confideTargetId)
+      && Boolean(input.value.trim());
+    button.disabled = !usable || state.busy;
+    button.textContent = state.busy ? "递过去…" : "递过去";
+  }
+
+  function updateConfideLimit() {
+    const el = $("confide-limit");
+    const input = $("confide-input");
+    if (!el || !input) {
+      return;
+    }
+    const raw = input.value;
+    if (raw.length <= 200) {
+      el.classList.add("hidden");
+      el.textContent = "";
+      return;
+    }
+    const trimmed = trimToSentence(raw, 200);
+    el.textContent = `密谈超过 200 字，发送时会保留到最后一个句号（${trimmed.text.length} 字）。`;
+    el.classList.remove("hidden");
+  }
+
+  function renderConfideReply() {
+    const box = $("confide-reply");
+    const reply = state.confideReply;
+    if (!reply) {
+      box.classList.add("hidden");
+      return;
+    }
+    $("confide-reply-name").textContent = `${reply.target_name} 压低声音`;
+    $("confide-reply-stance").textContent = STANCE_LABEL[reply.stance] || "没有表态";
+    $("confide-reply-text").textContent = reply.reply
+      || "他没接你的话，只把杯子往桌上一放。";
+    $("confide-reply-shift").textContent = formatConfideShift(reply);
+    box.classList.remove("hidden");
+  }
+
+  function formatConfideShift(reply) {
+    const parts = [];
+    const trustDelta = Number(reply && reply.trust_delta);
+    const suspicionDelta = Number(reply && reply.suspicion_delta);
+    if (Number.isFinite(trustDelta) && trustDelta !== 0) {
+      parts.push(`信任 ${formatDelta(trustDelta)}`);
+    }
+    if (Number.isFinite(suspicionDelta) && suspicionDelta !== 0) {
+      parts.push(`怀疑 ${formatDelta(suspicionDelta)}`);
+    }
+    if (parts.length) {
+      return parts.join(" · ");
+    }
+    const trust = Number(reply && reply.trust);
+    const suspicion = Number(reply && reply.suspicion);
+    const absolute = (Number.isFinite(trust) && Math.abs(trust) > 1)
+      || (Number.isFinite(suspicion) && Math.abs(suspicion) > 1);
+    if (absolute) {
+      const hold = [];
+      if (Number.isFinite(trust)) {
+        hold.push(`信任 ${Math.round(trust)}`);
+      }
+      if (Number.isFinite(suspicion)) {
+        hold.push(`怀疑 ${Math.round(suspicion)}`);
+      }
+      return hold.join(" · ");
+    }
+    if (Number.isFinite(trust) && trust !== 0) {
+      parts.push(`信任 ${formatDelta(trust)}`);
+    }
+    if (Number.isFinite(suspicion) && suspicion !== 0) {
+      parts.push(`怀疑 ${formatDelta(suspicion)}`);
+    }
+    if (!parts.length) {
+      return "他没让你看出态度变了多少。";
+    }
+    return parts.join(" · ");
+  }
+
+  function formatDelta(value) {
+    const sign = value > 0 ? "+" : "−";
+    const abs = Math.abs(value);
+    const text = abs < 1 ? abs.toFixed(2).replace(/0+$/u, "").replace(/\.$/u, "") : String(Math.round(abs));
+    return `${sign}${text}`;
+  }
+
+  function openConfide() {
+    if (!state.game || isFinished() || !youAlive()) {
+      return;
+    }
+    const phase = currentPhase();
+    if (phase !== "discussion" && phase !== "defense") {
+      showToast("现在不是低声说话的时候。", "warn");
+      return;
+    }
+    if (confideRemainingTotal() <= 0) {
+      showToast("本局的密谈已经用完了。", "warn");
+      return;
+    }
+    if (confideRemainingToday() <= 0) {
+      showToast("今天已经密谈过一次了，明晚再来。", "warn");
+      return;
+    }
+    state.confideOpen = true;
+    state.confideReply = null;
+    render();
+    const input = $("confide-input");
+    if (input) {
+      input.value = "";
+      window.setTimeout(() => input.focus(), 60);
+    }
+  }
+
+  function closeConfide() {
+    state.confideOpen = false;
+    state.confideReply = null;
+    render();
+  }
+
+  function handleConfideSend() {
+    if (state.busy || !state.game) {
+      return;
+    }
+    const input = $("confide-input");
+    const raw = input ? input.value.trim() : "";
+    const trimmed = trimToSentence(raw, 200);
+    const text = trimmed.text;
+    const target = findPlayer(state.confideTargetId);
+    if (!target || target.alive === false || target.is_you) {
+      showToast("先选一个还坐在桌边的人。", "warn");
+      return;
+    }
+    if (!text) {
+      showToast("总得说点什么，才算密谈。", "warn");
+      return;
+    }
+    if (!canConfide()) {
+      showToast("今天的密谈次数已经用完了。", "warn");
+      return;
+    }
+    if (trimmed.clipped) {
+      showToast(`密谈过长，已保留到最后一个句号（${text.length} 字）。`, "warn", 4200);
+    }
+    if (input) {
+      input.value = "";
+    }
+    $("confide-limit").classList.add("hidden");
+    runAction(async () => {
+      let result;
+      let fallback = false;
+      if (state.mock) {
+        result = mockConfide(target.id, text);
+      } else {
+        try {
+          result = await apiRequest(`${API}/games/${state.gameId}/confide`, {
+            method: "POST",
+            body: { target_id: target.id, text },
+          });
+        } catch (error) {
+          if (error && (error.status === 404 || error.status === 405 || error.status === 501)) {
+            fallback = true;
+            result = mockConfide(target.id, text);
+          } else {
+            throw error;
+          }
+        }
+      }
+      const entry = applyConfideResult(target, text, result || {});
+      state.confideReply = entry;
+      state.privateLog.push(entry);
+      state.confideUsedToday += 1;
+      state.confideUsedTotal += 1;
+      if (state.mock || fallback) {
+        addWhisperLine(target.name);
+      }
+      if (!state.mock && !fallback) {
+        await refreshReal();
+        ensureWhisperLine(target.name);
+      }
+      render();
+      if (fallback) {
+        showToast("密谈接口还没就绪，先用本地逻辑接住了这句话。", "warn", 4200);
+      }
+    });
+  }
+
+  function applyConfideResult(target, text, result) {
+    const stance = String(result.stance || "").toLowerCase();
+    const relative = Boolean(result.relative);
+    const trust = Number(result.trust !== undefined ? result.trust : result.trust_delta);
+    const suspicion = Number(result.suspicion !== undefined ? result.suspicion : result.suspicion_delta);
+    const prev = state.confideSnapshots[target.id] || null;
+    const baseTrust = prev && Number.isFinite(prev.trust) ? prev.trust : 50;
+    const baseSuspicion = prev && Number.isFinite(prev.suspicion) ? prev.suspicion : 0;
+    let trustDelta = null;
+    let suspicionDelta = null;
+    if (Number.isFinite(trust)) {
+      trustDelta = relative ? trust : trust - baseTrust;
+    }
+    if (Number.isFinite(suspicion)) {
+      suspicionDelta = relative ? suspicion : suspicion - baseSuspicion;
+    }
+    if (!relative) {
+      state.confideSnapshots[target.id] = {
+        trust: Number.isFinite(trust) ? trust : (prev ? prev.trust : undefined),
+        suspicion: Number.isFinite(suspicion) ? suspicion : (prev ? prev.suspicion : undefined),
+      };
+    }
+    return {
+      day: state.game ? state.game.day : 1,
+      target_id: target.id,
+      target_name: target.name,
+      text,
+      stance: STANCE_LABEL[stance] ? stance : "neutral",
+      reply: sanitizeLine(String(result.reply || result.text || ""), false),
+      trust: Number.isFinite(trust) ? trust : undefined,
+      suspicion: Number.isFinite(suspicion) ? suspicion : undefined,
+      trust_delta: trustDelta,
+      suspicion_delta: suspicionDelta,
+    };
+  }
+
+  function addWhisperLine(name) {
+    const log = state.game && state.game.public_log;
+    if (!log) {
+      return;
+    }
+    const line = `你与${name}低声说了几句。`;
+    log.push({
+      seq: nextSeq(log),
+      speaker_id: "__narration",
+      speaker_name: "旁白",
+      text: line,
+      day: state.game.day,
+    });
+
+  }
+
+  function pushLocalEvent(event) {
+    if (!event || !state.game) {
+      return;
+    }
+    state.localEvents.push({ ...event, day: Number(event.day) || state.game.day });
+  }
+
+  function localEventEntries() {
+    return state.localEvents.map(adaptDrawerEntry).filter(Boolean);
+  }
+
+  function ensureWhisperLine(name) {
+    const log = (state.game && state.game.public_log) || [];
+    const recent = log.slice(-6);
+    const has = recent.some((entry) => String(entry.text || "").includes("低声"));
+    if (!has) {
+      addWhisperLine(name);
+    }
+  }
+
   function showReport(text, kind = "info") {
     state.report = text || "";
     state.reportKind = kind;
@@ -1288,7 +1748,9 @@ state.selectedId = null;
       return state.mock ? "演示模式：正在摆好圆桌……" : "正在推开旅馆的门……";
     }
     if (phase === "ended") {
-      return "本局已结束。";
+      return state.endPending && !state.endRevealed
+        ? "票已经落定。先看看票板与处决结果，再点「查看结局」。"
+        : "本局已结束。";
     }
     if (!youAlive()) {
       return "你已出局，只能旁观。点「继续观战」，让他们把这一夜走完。";
@@ -1345,7 +1807,7 @@ state.selectedId = null;
     } else if (phase === "night") {
       input.placeholder = "灯已经熄了，等天亮再说";
     } else {
-      input.placeholder = "对圆桌上的人说点什么";
+      input.placeholder = "对桌上的人说点什么";
     }
     speakButton.textContent = phase === "defense" ? "质证" : "发言";
     speakButton.disabled = speakLocked || !input.value.trim();
@@ -1368,11 +1830,34 @@ state.selectedId = null;
     secondary.classList.toggle("hidden", !secondaryVisible);
     secondary.disabled = state.busy;
 
+    const confide = $("confide-button");
+    const confideVisible = Boolean(state.game) && !finished && alive
+      && (phase === "discussion" || phase === "defense");
+    confide.classList.toggle("hidden", !confideVisible);
+    if (confideVisible) {
+      const today = confideRemainingToday();
+      const total = confideRemainingTotal();
+      if (total <= 0) {
+        confide.textContent = "密谈（已用完）";
+      } else if (today <= 0) {
+        confide.textContent = "密谈（今日已用）";
+      } else {
+        confide.textContent = "密谈";
+      }
+      confide.disabled = state.busy || !canConfide();
+      confide.title = total <= 0
+        ? "本局三次密谈都用完了"
+        : (today <= 0 ? "今天已经密谈过一次，明晚再来" : "每天一次，本局三次");
+    }
+
     let primaryText = "";
     let primaryVisible = false;
     let primaryDisabled = state.busy;
     const selection = findPlayer(state.selectedId);
-    if (state.game && !finished && alive) {
+    if (finished && state.endPending && !state.endRevealed) {
+      primaryText = "查看结局";
+      primaryVisible = true;
+    } else if (state.game && !finished && alive) {
       if (phase === "nomination") {
         primaryText = "提名";
         primaryVisible = true;
@@ -1383,7 +1868,10 @@ state.selectedId = null;
         primaryVisible = true;
         primaryDisabled = primaryDisabled || !target;
       } else if (phase === "night") {
-        if (role === "murderer") {
+        if (state.voteHeld) {
+          primaryText = "看过票板，进入夜晚";
+          primaryVisible = true;
+        } else if (role === "murderer") {
           primaryText = "动手";
           primaryVisible = true;
           primaryDisabled = primaryDisabled || !selection;
@@ -1540,8 +2028,60 @@ state.selectedId = null;
     return { id, name: id ? playerName(id) : name };
   }
 
+  function dayFromText(text) {
+    const raw = String(text || "");
+    const match = raw.match(/第\s*([0-9]+|[一二三四五六七八九十]+)\s*[天夜]/u);
+    if (!match) {
+      return 0;
+    }
+    return parseDayToken(match[1]);
+  }
+
+  function parseDayToken(token) {
+    const value = String(token || "").trim();
+    if (/^\d+$/u.test(value)) {
+      return Number(value) || 0;
+    }
+    const digits = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    if (value === "十") {
+      return 10;
+    }
+    if (value.length === 2 && value[0] === "十") {
+      return 10 + (digits[value[1]] || 0);
+    }
+    if (value.length === 2 && value[1] === "十") {
+      return (digits[value[0]] || 0) * 10;
+    }
+    if (value.length === 3 && value[1] === "十") {
+      return (digits[value[0]] || 0) * 10 + (digits[value[2]] || 0);
+    }
+    return digits[value] || 0;
+  }
+
+  function resolveLogDays(log) {
+    let day = 1;
+    const out = [];
+    for (const entry of log || []) {
+      const explicit = Number(entry.day);
+      const marker = dayFromText(entry.text);
+      if (Number.isFinite(explicit) && explicit > 0) {
+        day = explicit;
+      } else if (marker) {
+        day = marker;
+      }
+      out.push({ ...entry, day });
+      const narration = entry.speaker_id === "__narration"
+        || entry.speaker_id === "narrator"
+        || entry.speaker_name === "旁白";
+      if (narration && !marker && /天亮|次日|转天/u.test(String(entry.text || ""))) {
+        day += 1;
+      }
+    }
+    return out;
+  }
+
   function aftermathFromLog() {
-    const log = (state.game && state.game.public_log) || [];
+    const log = resolveLogDays((state.game && state.game.public_log) || []);
     const byDay = new Map();
     for (const entry of log) {
       const narration = entry.speaker_id === "__narration"
@@ -1555,7 +2095,18 @@ state.selectedId = null;
         continue;
       }
       const day = Math.max(1, Number(entry.day) || 1);
-      const row = byDay.get(day) || { day, executed: null, killed: null, note: "" };
+      const row = byDay.get(day) || {
+        day,
+        executed: null,
+        killed: null,
+        tie: false,
+        tally: [],
+        threshold: 0,
+        note: "",
+      };
+      if (/平票/u.test(text)) {
+        row.tie = true;
+      }
       if (!row.executed) {
         const exec = text.match(/(?:^|[，,。；;\s])([^，,。；;\s]{1,8})\s*被(?:投票)?处决/u);
         if (exec) {
@@ -1569,36 +2120,95 @@ state.selectedId = null;
         }
       }
       if (!row.note) {
-        row.note = text.slice(0, 48);
+        row.note = text.slice(0, 60);
       }
       byDay.set(day, row);
     }
     return [...byDay.values()].sort((left, right) => left.day - right.day);
   }
 
+  function normalizeDayHistory(raw) {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        const tally = normalizeTally(item.tally || item.votes_tally || []);
+        return {
+          day: Math.max(1, Number(item.day) || 1),
+          executed: normalizePerson(item.executed),
+          killed: normalizePerson(item.killed),
+          tie: Boolean(item.tie || item.tied),
+          stalemate: Boolean(item.stalemate || item.tie || item.tied),
+          tally,
+          threshold: Number(item.threshold) || 0,
+          note: String(item.note || item.message || ""),
+        };
+      })
+      .filter(Boolean);
+  }
+
   function resolveAftermath() {
-    const backend = (state.game && state.game.aftermath) || [];
-    const rows = backend.length
-      ? backend.map((item) => ({
-        day: item.day,
-        executed: item.executed ? { ...item.executed } : null,
-        killed: item.killed ? { ...item.killed } : null,
-        note: item.note || "",
-      }))
-      : aftermathFromLog();
+    const history = normalizeDayHistory(state.game && state.game.day_history);
+    const backend = normalizeDayHistory(state.game && state.game.aftermath);
+    const rows = [];
+    const put = (row) => {
+      if (!row) {
+        return;
+      }
+      const existing = rows.find((item) => item.day === row.day);
+      if (!existing) {
+        rows.push(row);
+        return;
+      }
+      existing.executed = existing.executed || row.executed;
+      existing.killed = existing.killed || row.killed;
+      existing.tie = existing.tie || row.tie;
+      existing.stalemate = existing.stalemate || row.stalemate;
+      existing.tally = existing.tally.length ? existing.tally : row.tally;
+      existing.threshold = existing.threshold || row.threshold;
+      existing.note = existing.note || row.note;
+    };
+    for (const row of history) {
+      put(row);
+    }
+    for (const row of backend) {
+      put(row);
+    }
+    for (const row of aftermathFromLog()) {
+      if (!rows.some((item) => item.day === row.day)) {
+        put(row);
+      }
+    }
     const result = state.voteResult;
-    if (result && (result.executedName || result.message)) {
+    if (result && (result.executedName || result.executedId || result.message)) {
       const day = result.day || (state.game && state.game.day) || 1;
       let row = rows.find((item) => item.day === day);
       if (!row) {
-        row = { day, executed: null, killed: null, note: "" };
+        row = {
+          day,
+          executed: null,
+          killed: null,
+          tie: false,
+          tally: [],
+          threshold: 0,
+          note: "",
+        };
         rows.push(row);
       }
       if (!row.executed && result.executedName) {
         row.executed = { id: result.executedId, name: result.executedName };
       }
-      if (!row.note && result.message) {
-        row.note = result.message;
+      if (!row.tally.length && Array.isArray(result.tally)) {
+        row.tally = result.tally.map((item) => ({ ...item }));
+      }
+      row.threshold = row.threshold || result.threshold || 0;
+      row.tie = row.tie || Boolean(result.tie);
+      if (!row.note) {
+        row.note = result.message || "";
       }
     }
     if (!rows.length) {
@@ -1649,6 +2259,11 @@ state.selectedId = null;
     for (const item of list) {
       const row = node("li", "end-aftermath-day");
       row.append(node("span", "ea-day", `第 ${item.day} 天`));
+      const tally = Array.isArray(item.tally) ? item.tally : [];
+      const topCount = tally.length ? Number(tally[0].count) || 0 : 0;
+      const tie = Boolean(item.tie)
+        || (Boolean(item.stalemate) && tally.length > 1
+          && Number(tally[1].count) === topCount && topCount > 0);
       const what = node("span", "ea-what");
       if (item.executed) {
         what.append(node("span", "ea-exec", `处决 · ${item.executed.name}`));
@@ -1660,10 +2275,27 @@ state.selectedId = null;
         what.append(node("span", "ea-kill", `夜杀 · ${item.killed.name}`));
       }
       if (!item.executed && !item.killed) {
-        what.append(node("span", "ea-empty", "无人出局"));
+        let emptyText = "无人出局";
+        if (tie) {
+          emptyText = "平票 · 无人被处决";
+        } else if (item.stalemate) {
+          emptyText = item.threshold
+            ? `未达 ${item.threshold} 票门槛 · 无人被处决`
+            : "未达门槛 · 无人被处决";
+        }
+        what.append(node("span", `ea-empty${tie ? " is-tie" : ""}`, emptyText));
       }
       row.append(what);
-      let note = item.note || "";
+      if (tally.length) {
+        const parts = tally
+          .slice()
+          .sort((left, right) => right.count - left.count)
+          .map((entry) => `${playerName(entry.id)} ${entry.count}`);
+        row.append(node("span", "ea-tally",
+          `共 ${tally.reduce((sum, entry) => sum + (Number(entry.count) || 0), 0)} 票 · ${parts.join(" / ")}`
+          + (item.threshold ? ` · 门槛 ${item.threshold}` : "")));
+      }
+      let note = String(item.note || "").replace(/^第\s*\d+\s*天[，,]\s*/u, "");
       const subjects = [];
       if (item.executed) {
         subjects.push(item.executed.name);
@@ -1679,7 +2311,12 @@ state.selectedId = null;
       if (matched) {
         note = note.slice(matched.length)
           .replace(/^\s*(?:被(?:投票)?处决|夜里|天亮时|死在|没有下楼)[，,]?\s*/u, "")
+          .replace(/^[；;]\s*/u, "")
           .trim();
+      }
+      if (tie || /^(?:最高\s*\d+\s*票|平票|票数不够|无人被处决)/u.test(note)
+        || /^\d+\s*\/\s*\d+\s*票过门槛/u.test(note)) {
+        note = "";
       }
       if (note) {
         row.append(node("span", "ea-note", note));
@@ -1690,7 +2327,7 @@ state.selectedId = null;
 
   function renderFatalVote() {
     const el = $("end-fatal");
-    const result = state.voteResult;
+    const result = state.voteResult || state.lastVoteResult;
     if (!el) {
       return;
     }
@@ -1715,9 +2352,29 @@ state.selectedId = null;
     el.classList.remove("hidden");
   }
 
+  function dedupeEndMessage(message) {
+    const raw = String(message || "");
+    if (!raw) {
+      return "雪停了，真相留在了桌上。";
+    }
+    const seen = new Set();
+    const kept = raw.split(/(?<=[。！？])/u).filter((sentence) => {
+      const trimmed = sentence.trim();
+      if (!trimmed) {
+        return false;
+      }
+      if (seen.has(trimmed)) {
+        return false;
+      }
+      seen.add(trimmed);
+      return true;
+    });
+    return kept.join("") || raw;
+  }
+
   function renderEnd() {
     const overlay = $("end-overlay");
-    if (!isFinished()) {
+    if (!isFinished() || !state.endRevealed) {
       overlay.classList.add("hidden");
       overlay.setAttribute("aria-hidden", "true");
       return;
@@ -1727,7 +2384,8 @@ state.selectedId = null;
     $("end-frame").dataset.result = result;
     $("end-kicker").textContent = result === "murderer" ? "NIGHTFALL · 结局" : "DAWN · 结局";
     $("end-title").textContent = winner || "天亮了";
-    $("end-subtitle").textContent = (state.game && state.game.message) || "雪停了，真相留在了桌上。";
+    $("end-subtitle").textContent = dedupeEndMessage((state.game && state.game.message)
+      || "雪停了，真相留在了桌上。");
     $("end-murderer").textContent = resolveRevealName();
     $("end-murderer-role").textContent = revealRoleLabel();
     const role = youRole();
@@ -1751,6 +2409,96 @@ state.selectedId = null;
     "narration", "narrate", "public", "message", "report", "system",
   ]);
 
+  const DRAWER_EVENT_TYPES = new Set([
+    "nominate", "nomination", "vote", "voting", "night", "kill", "execute", "execution",
+  ]);
+
+  const DRAWER_EVENT_META = {
+    nominate: "提名",
+    nomination: "提名",
+    vote: "投票",
+    voting: "投票",
+    night: "夜晚",
+    kill: "夜晚",
+    execute: "处决",
+    execution: "处决",
+  };
+
+  function logPerson(id, provided) {
+    if (id) {
+      const player = findPlayer(id);
+      if (player) {
+        return displayName(player);
+      }
+    }
+    return String(provided || id || "某人");
+  }
+
+  function summarizeVoteEntry(entry) {
+    const rawVotes = entry.votes || entry.ballots || entry.ballot;
+    const asArray = Array.isArray(rawVotes)
+      ? rawVotes
+      : (rawVotes && typeof rawVotes === "object"
+        ? Object.entries(rawVotes).map(([voterId, target]) => ({
+          voter_id: voterId,
+          target_id: typeof target === "string" ? target : idOf(target),
+        }))
+        : []);
+    if (!asArray.length) {
+      return "";
+    }
+    const counts = new Map();
+    const lines = [];
+    for (const vote of asArray) {
+      const voter = logPerson(vote.voter_id || vote.voterId, vote.voter_name || vote.voterName);
+      const target = logPerson(
+        idOf(vote.target_id || vote.targetId || vote.target),
+        vote.target_name || vote.targetName,
+      );
+      const reason = sanitizeReason(vote.reason || vote.why || "", target);
+      counts.set(target, (counts.get(target) || 0) + 1);
+      const quote = reason ? (reason.startsWith("「") ? reason : `「${reason}」`) : "";
+      lines.push(`${voter} → ${target}${quote ? `：${quote}` : ""}`);
+    }
+    const tally = [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((left, right) => right.count - left.count);
+    const total = asArray.length;
+    const threshold = Number(entry.threshold)
+      || (state.voteResult && Number(state.voteResult.day) === Number(entry.day)
+        ? Number(state.voteResult.threshold) : 0);
+    const executedRaw = entry.executed || entry.executed_name || entry.result;
+    const executed = executedRaw ? logPerson(idOf(executedRaw), nameOf(executedRaw)) : "";
+    const tie = Boolean(entry.tie || entry.tied) || /平票/u.test(String(entry.message || ""));
+    const outcome = executed
+      ? `处决 ${executed}`
+      : (tie ? "平票，无人被处决"
+        : (threshold ? `最高 ${tally[0] ? tally[0].count : 0} 票，未达 ${threshold} 票门槛`
+          : `最高 ${tally[0] ? tally[0].count : 0} 票`));
+    return `投票 · 共 ${total} 票 · ${tally.map((item) => `${item.name} ${item.count}`).join(" / ")} · ${outcome}`
+      + `\n${lines.join("\n")}`;
+  }
+
+  function summarizeNominateEntry(entry) {
+    const targetRaw = entry.target || entry.target_id || entry.nominee;
+    if (!targetRaw) {
+      return "";
+    }
+    const target = logPerson(idOf(targetRaw), nameOf(targetRaw));
+    const defense = entry.defense && typeof entry.defense === "object"
+      ? sanitizeLine(String(entry.defense.text || entry.defense.content || ""), false)
+      : "";
+    return `提名 · ${target}${defense ? `\n自辩：${defense}` : ""}`;
+  }
+
+  function summarizeNightEntry(entry) {
+    const killedRaw = entry.killed || entry.killed_id || entry.victim;
+    const killed = killedRaw ? logPerson(idOf(killedRaw), nameOf(killedRaw)) : "";
+    return killed
+      ? `夜晚 · ${killed} 没有下楼`
+      : `夜晚 · 无人被杀${/平票|僵局/u.test(String(entry.message || "")) ? "（平票僵局）" : ""}`;
+  }
+
   function adaptDrawerEntry(entry) {
     if (!entry || typeof entry !== "object") {
       return null;
@@ -1761,19 +2509,32 @@ state.selectedId = null;
     }
     const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : null;
     const data = entry.data && typeof entry.data === "object" ? entry.data : null;
-    const text = entry.text ?? entry.content
+    let text = entry.text ?? entry.content
       ?? (payload && (payload.text ?? payload.content))
       ?? (data && (data.text ?? data.content));
     if (typeof text !== "string" || !text.trim()) {
+      if (type === "vote" || type === "voting") {
+        text = summarizeVoteEntry(entry);
+      } else if (type === "nominate" || type === "nomination") {
+        text = summarizeNominateEntry(entry);
+      } else if (type === "night" || type === "kill" || type === "execute" || type === "execution") {
+        text = summarizeNightEntry(entry);
+      } else {
+        text = "";
+      }
+    }
+    if (!text || !String(text).trim()) {
       return null;
     }
+    const isEvent = DRAWER_EVENT_TYPES.has(type);
     return {
       ...entry,
-      text,
-      speaker_id: entry.speaker_id || entry.speakerId
-        || (payload && payload.speaker_id) || (data && data.speaker_id),
-      speaker_name: entry.speaker_name || entry.speakerName
-        || (payload && payload.speaker_name) || (data && data.speaker_name),
+      text: String(text),
+      type,
+      speaker_id: isEvent ? "__log" : (entry.speaker_id || entry.speakerId
+        || (payload && payload.speaker_id) || (data && data.speaker_id)),
+      speaker_name: isEvent ? "卷宗" : (entry.speaker_name || entry.speakerName
+        || (payload && payload.speaker_name) || (data && data.speaker_name)),
       day: entry.day ?? (payload && payload.day) ?? (data && data.day),
     };
   }
@@ -1796,37 +2557,41 @@ state.selectedId = null;
     const merged = [];
     const seen = new Set();
     for (const entry of [...primary, ...extra]) {
-      const key = `${entry.speaker_id}|${entry.text}`;
+      const key = `${entry.day}|${entry.text}`;
       if (seen.has(key)) {
         continue;
       }
       seen.add(key);
       merged.push(entry);
     }
-    return merged.map((entry, index) => ({ ...entry, seq: index + 1 }));
+    return merged
+      .map((entry, index) => ({ ...entry, seq: index + 1 }))
+      .sort((left, right) => (Number(left.day) || 1) - (Number(right.day) || 1));
   }
 
   function localLogEntries() {
-    const day = state.game ? state.game.day : 1;
-    return ((state.game && state.game.public_log) || []).map((entry) => ({ ...entry, day: entry.day || day }));
+    return resolveLogDays((state.game && state.game.public_log) || []);
   }
 
   function renderDrawer(entries) {
     const list = $("log-drawer-list");
     const empty = $("log-drawer-empty");
     list.textContent = "";
-    if (!entries.length) {
+    const sorted = [...entries].sort(
+      (left, right) => (Number(left.day) || 1) - (Number(right.day) || 1),
+    );
+    if (!sorted.length) {
       empty.classList.remove("hidden");
       empty.textContent = state.game ? "本局还没有记录。" : "还没有开局。";
-      $("log-drawer-count").textContent = "0 条";
       return;
     }
     empty.classList.add("hidden");
-    for (const entry of entries) {
+    for (const entry of sorted) {
       const isYou = entry.speaker_id === youId();
       const narration = entry.speaker_id === "__narration"
         || entry.speaker_id === "narrator"
         || entry.speaker_name === "旁白";
+      const event = entry.speaker_id === "__log";
       const item = node("li", "drawer-entry");
       if (isYou) {
         item.classList.add("is-you");
@@ -1834,14 +2599,148 @@ state.selectedId = null;
       if (narration) {
         item.classList.add("is-narration");
       }
-      const day = entry.day || (state.game && state.game.day) || 1;
+      if (event) {
+        item.classList.add("is-event");
+      }
+      const day = Number(entry.day) || 1;
+      const who = event
+        ? (DRAWER_EVENT_META[entry.type] || "票与夜")
+        : (isYou ? "你" : entry.speaker_name || "旁白");
       item.append(
-        node("p", "drawer-meta", `第 ${day} 天 · ${isYou ? "你" : entry.speaker_name}`),
+        node("p", "drawer-meta", `第 ${day} 天 · ${who}`),
         node("p", "drawer-text", entry.text),
       );
       list.append(item);
     }
-    $("log-drawer-count").textContent = `${entries.length} 条`;
+    if (state.drawerTab === "public") {
+      $("log-drawer-count").textContent = `${sorted.length} 条`;
+    }
+  }
+
+  function normalizePrivateEntries(raw) {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+        const targetId = String(entry.target_id || entry.targetId || "");
+        const targetName = String(entry.target_name || entry.targetName || "")
+          || (targetId ? playerName(targetId) : "");
+        const text = String(entry.text || entry.content || "");
+        if (!text.trim()) {
+          return null;
+        }
+        return {
+          day: Math.max(1, Number(entry.day) || 1),
+          target_id: targetId,
+          target_name: targetName || "那个人",
+          text,
+          stance: String(entry.stance || "neutral"),
+          reply: String(entry.reply || ""),
+          trust: entry.trust !== undefined ? entry.trust : entry.trust_delta,
+          suspicion: entry.suspicion !== undefined ? entry.suspicion : entry.suspicion_delta,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function mergePrivateEntries(primary, extra) {
+    const merged = [];
+    const index = new Map();
+    for (const entry of [...primary, ...extra]) {
+      const key = `${entry.day}|${entry.target_id}|${entry.text}`;
+      if (index.has(key)) {
+        const kept = merged[index.get(key)];
+        for (const field of ["trust", "suspicion", "trust_delta", "suspicion_delta", "reply"]) {
+          if (kept[field] === undefined && entry[field] !== undefined) {
+            kept[field] = entry[field];
+          }
+        }
+        continue;
+      }
+      index.set(key, merged.length);
+      merged.push(entry);
+    }
+    return merged.sort((left, right) => (Number(left.day) || 1) - (Number(right.day) || 1));
+  }
+
+  function renderPrivateDrawer(entries) {
+    const list = $("private-drawer-list");
+    const empty = $("private-drawer-empty");
+    list.textContent = "";
+    if (!entries.length) {
+      empty.classList.remove("hidden");
+      empty.textContent = state.game ? "本局还没有私下说过话。" : "还没有开局。";
+      return;
+    }
+    empty.classList.add("hidden");
+    let lastDay = 0;
+    for (const entry of entries) {
+      const day = Number(entry.day) || 1;
+      if (day !== lastDay) {
+        list.append(node("li", "log-day", `第 ${day} 天 · 廊下`));
+        lastDay = day;
+      }
+      const item = node("li", "private-entry");
+      item.append(
+        node("p", "private-meta", `你对 ${entry.target_name} 低声说`),
+        node("p", "private-said", `「${entry.text}」`),
+      );
+      if (entry.reply) {
+        const reply = node("p", "private-reply");
+        reply.append(
+          node("span", "private-reply-who", `${entry.target_name} · ${STANCE_LABEL[entry.stance] || "没有表态"}`),
+          document.createTextNode(entry.reply),
+        );
+        item.append(reply);
+      }
+      const shift = formatConfideShift(entry);
+      if (!/没让你看出/u.test(shift)) {
+        item.append(node("p", "private-shift", shift));
+      }
+      list.append(item);
+    }
+    if (state.drawerTab === "private") {
+      $("log-drawer-count").textContent = `${entries.length} 条`;
+    }
+  }
+
+  async function loadPrivateDrawer() {
+    let entries = state.privateLog.slice();
+    if (state.game && !state.mock) {
+      try {
+        const data = await apiRequest(`${API}/games/${state.gameId}/private-log`);
+        const remote = normalizePrivateEntries(data && data.entries);
+        if (remote.length) {
+          entries = mergePrivateEntries(remote, entries);
+          state.privateLog = entries.slice();
+        }
+      } catch (error) {
+        entries = state.privateLog.slice();
+      }
+    }
+    renderPrivateDrawer(entries);
+  }
+
+  function setDrawerTab(tab) {
+    state.drawerTab = tab === "private" ? "private" : "public";
+    const publicScroll = $("log-drawer-scroll");
+    const privateScroll = $("private-drawer-scroll");
+    const isPrivate = state.drawerTab === "private";
+    publicScroll.classList.toggle("hidden", isPrivate);
+    privateScroll.classList.toggle("hidden", !isPrivate);
+    $("drawer-tab-public").classList.toggle("is-active", !isPrivate);
+    $("drawer-tab-private").classList.toggle("is-active", isPrivate);
+    $("drawer-tab-public").setAttribute("aria-selected", isPrivate ? "false" : "true");
+    $("drawer-tab-private").setAttribute("aria-selected", isPrivate ? "true" : "false");
+    if (isPrivate) {
+      loadPrivateDrawer();
+    } else {
+      $("log-drawer-count").textContent = `${$("log-drawer-list").children.length} 条`;
+    }
   }
 
   async function openDrawer() {
@@ -1851,8 +2750,9 @@ state.selectedId = null;
     state.drawerOpen = true;
     $("log-button").setAttribute("aria-expanded", "true");
     $("log-drawer-game").textContent = state.gameId || "";
-    const local = localLogEntries();
+    const local = mergeDrawerEntries(localLogEntries(), localEventEntries());
     renderDrawer(local);
+    setDrawerTab(state.drawerTab);
     if (!state.game) {
       return;
     }
@@ -1987,6 +2887,40 @@ state.selectedId = null;
     "比起{target}，另一个人今夜更说不清。",
   ];
 
+  const MOCK_CONFIDE_LINES = {
+    p1: [
+      "…你要我保谁？先把话说明白，我不替人白担风险。",
+      "廊下风大，你的话我只听一半。剩下半句，等上了桌再说。",
+      "这楼里没有白给的人情。你拿什么换我这一句？",
+    ],
+    p2: [
+      "…账我可以替你算，人我不替你保。",
+      "低声说话，多半是见不得光的事。你直说吧。",
+      "我记性好。你今天说的，我明天会记得。",
+    ],
+    p3: [
+      "…我、我不太敢应你。叫人看见，我这差事就没了。",
+      "你别站这么近。有话在桌上说，我听着。",
+      "我什么都不知道。真的，你别再问了。",
+    ],
+    p4: [
+      "…生意人听得懂这种话。你先开个价。",
+      "我信证据，不信低声。你若拿得出东西，我倒可以听。",
+      "你确认过别人的口风，才来找我？那我先听听你的。",
+    ],
+    p5: [
+      "…我在这旅馆二十年，什么低声话没听过。你这也算话？",
+      "马厩的灯我盯得清。你今夜从后门过不过，我都记着。",
+      "你要我咬死谁？说清楚，别让我到桌上现编。",
+    ],
+  };
+
+  const MOCK_CONFIDE_FALLBACK = [
+    "…我听着，但没答应你什么。",
+    "这话我记下了。至于怎么用，得看明天桌上谁先开口。",
+    "别靠太近。隔墙有耳。",
+  ];
+
   function shuffle(items) {
     const copy = items.slice();
     for (let index = copy.length - 1; index > 0; index -= 1) {
@@ -2036,7 +2970,27 @@ state.selectedId = null;
         || !youAlive()
         || (phase !== "discussion" && phase !== "defense")
         || !$("speak-input").value.trim();
+      updateSpeakLimit();
     });
+    $("discussion-scroll").addEventListener("scroll", () => {
+      const el = $("discussion-scroll");
+      state.userScrolled = el.scrollHeight - el.scrollTop - el.clientHeight > 120;
+    });
+    $("confide-button").addEventListener("click", openConfide);
+    $("confide-close").addEventListener("click", closeConfide);
+    $("confide-send").addEventListener("click", handleConfideSend);
+    $("confide-input").addEventListener("input", () => {
+      updateConfideSend();
+      updateConfideLimit();
+    });
+    $("confide-input").addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        handleConfideSend();
+      }
+    });
+    $("drawer-tab-public").addEventListener("click", () => setDrawerTab("public"));
+    $("drawer-tab-private").addEventListener("click", () => setDrawerTab("private"));
     $("ballot-reason").addEventListener("input", () => {
       state.ballotReason = $("ballot-reason").value.slice(0, 80);
     });
@@ -2077,6 +3031,9 @@ state.selectedId = null;
       }
       if (!$("confirm-strip").classList.contains("hidden")) {
         closeConfirm();
+      }
+      if (state.confideOpen) {
+        closeConfide();
       }
       if (state.drawerOpen) {
         closeDrawer();
@@ -2172,9 +3129,41 @@ state.selectedId = null;
     render();
   }
 
+  function trimToSentence(raw, limit) {
+    const text = String(raw || "").trim();
+    if (text.length <= limit) {
+      return { text, clipped: false };
+    }
+    const head = text.slice(0, limit);
+    let cut = -1;
+    for (const mark of ["。", "！", "？", "；", "\n"]) {
+      cut = Math.max(cut, head.lastIndexOf(mark));
+    }
+    if (cut >= Math.floor(limit / 3)) {
+      return { text: head.slice(0, cut + 1).trim(), clipped: true };
+    }
+    return { text: `${head.trim()}…`, clipped: true };
+  }
+
+  function updateSpeakLimit() {
+    const el = $("speak-limit");
+    const raw = $("speak-input").value;
+    if (!el) {
+      return;
+    }
+    if (raw.length <= SPEAK_MAX_CHARS) {
+      el.classList.add("hidden");
+      el.textContent = "";
+      return;
+    }
+    const trimmed = trimToSentence(raw, SPEAK_MAX_CHARS);
+    el.textContent = `发言超过 ${SPEAK_MAX_CHARS} 字，发送时会保留到最后一个句号（${trimmed.text.length} 字）。`;
+    el.classList.remove("hidden");
+  }
+
   function handleSpeak() {
     const input = $("speak-input");
-    const text = input.value.trim();
+    const raw = input.value.trim();
     if (!state.game || state.busy) {
       return;
     }
@@ -2186,10 +3175,16 @@ state.selectedId = null;
       showToast("现在不是发言的时机。", "warn");
       return;
     }
-    if (!text) {
+    if (!raw) {
       return;
     }
+    const trimmed = trimToSentence(raw, SPEAK_MAX_CHARS);
+    const text = trimmed.text;
     input.value = "";
+    $("speak-limit").classList.add("hidden");
+    if (trimmed.clipped) {
+      showToast(`发言过长，已保留到最后一个句号（${text.length} 字）。`, "warn", 4200);
+    }
     runAction(async () => {
       let result;
       if (state.mock) {
@@ -2284,6 +3279,12 @@ state.selectedId = null;
       state.ballotTargetId = target ? target.id : null;
       state.ballotReason = "";
       const name = target ? target.name : defense.speaker_name;
+      pushLocalEvent({
+        type: "nominate",
+        day: state.game ? state.game.day : 1,
+        target: target ? { id: target.id, name: target.name } : null,
+        defense: defense && defense.text ? { text: defense.text } : null,
+      });
       showReport(`${name} 被提名上桌。先听自辩，质证完再投票。`, "warn");
       render();
       return;
@@ -2329,6 +3330,7 @@ state.selectedId = null;
       tie: Boolean(result && (result.tie || result.tied)),
     };
     state.lastVotes = state.voteResult;
+    state.lastVoteResult = state.voteResult;
     state.nominationMode = false;
     state.selectedId = null;
     state.ballotTargetId = null;
@@ -2350,6 +3352,11 @@ state.selectedId = null;
     if (payload.reveal) {
       captureReveal(payload);
     }
+    state.voteHeld = Boolean(state.game && state.game.phase === "night" && !isFinished());
+    if (isFinished()) {
+      state.endPending = true;
+      state.endRevealed = false;
+    }
 
     const message = (result && result.message)
       || (executedName
@@ -2358,6 +3365,21 @@ state.selectedId = null;
           ? "平票，今晚无人被处决。"
           : `最高 ${Math.max(0, ...tally.map((row) => row.count), 0)} 票，未达 ${threshold} 票门槛。`));
     showReport(message, executedName ? "warn" : "info");
+    pushLocalEvent({
+      type: "vote",
+      day: state.voteResult.day,
+      votes: votes.map((vote) => ({
+        voter_id: vote.voterId,
+        voter_name: vote.voterName,
+        target_id: vote.targetId,
+        target_name: vote.targetName,
+        reason: vote.reason,
+      })),
+      threshold,
+      executed: executedActualId ? { id: executedActualId, name: executedName } : null,
+      tie: state.voteResult.tie,
+      message,
+    });
 
     const wide = window.matchMedia("(min-width: 821px)").matches;
     if (wide && executedActualId === youId()) {
@@ -2401,6 +3423,7 @@ state.selectedId = null;
   }
 
   function handleNightResult(result) {
+    const nightDay = state.game ? state.game.day : 1;
     const killedId = idOf(result && result.killed);
     let killedName = nameOf(result && result.killed);
     if (!killedName && killedId) {
@@ -2427,8 +3450,13 @@ state.selectedId = null;
     state.voteResult = null;
     state.defense = null;
     state.nominated = null;
+    state.voteHeld = false;
     if (payload.reveal) {
       captureReveal(payload);
+    }
+    if (isFinished()) {
+      state.endPending = true;
+      state.endRevealed = false;
     }
 
 
@@ -2436,6 +3464,12 @@ state.selectedId = null;
       ? (killedName === "你" ? "天亮时，你没有下楼。" : `天亮时，${killedName} 没有下楼。`)
       : ((result && result.message) || "天亮了，没有人死。");
     showReport(message, killedName ? "warn" : "info");
+    pushLocalEvent({
+      type: "night",
+      day: nightDay,
+      killed: killedActualId ? { id: killedActualId, name: killedName } : null,
+      message,
+    });
     if (killedActualId === youId()) {
       showToast("你没能熬到天亮。终局揭晓。", "warn", 5200);
     }
@@ -2473,12 +3507,13 @@ state.selectedId = null;
           if (!voterId || !targetId) {
             return null;
           }
+          const targetName = voteDisplayName(targetId, String(vote.target_name || vote.targetName || ""));
           return {
             voterId,
             voterName: voteDisplayName(voterId, String(vote.voter_name || vote.voterName || "")),
             targetId,
-            targetName: voteDisplayName(targetId, String(vote.target_name || vote.targetName || "")),
-            reason: sanitizeReason(vote.reason || vote.why || vote.rationale || ""),
+            targetName,
+            reason: sanitizeReason(vote.reason || vote.why || vote.rationale || "", targetName),
           };
         })
         .filter(Boolean);
@@ -2583,7 +3618,13 @@ state.selectedId = null;
       return;
     }
     if (isFinished()) {
-      renderEnd();
+      if (state.endPending && !state.endRevealed) {
+        state.endPending = false;
+        state.endRevealed = true;
+        render();
+      } else {
+        renderEnd();
+      }
       return;
     }
     if (!youAlive()) {
@@ -2606,7 +3647,18 @@ state.selectedId = null;
   }
 
   function handlePrimary() {
-    if (!state.game || state.busy || !youAlive()) {
+    if (!state.game || state.busy) {
+      return;
+    }
+    if (isFinished()) {
+      if (state.endPending && !state.endRevealed) {
+        state.endPending = false;
+        state.endRevealed = true;
+        render();
+      }
+      return;
+    }
+    if (!youAlive()) {
       return;
     }
     const phase = currentPhase();
@@ -2635,6 +3687,11 @@ state.selectedId = null;
       return;
     }
     if (phase === "night") {
+      if (state.voteHeld) {
+        state.voteHeld = false;
+        render();
+        return;
+      }
       if (youRole() === "murderer") {
         const target = findPlayer(state.selectedId);
         if (!target) {
@@ -2682,6 +3739,26 @@ state.selectedId = null;
     state.lastSeq = 0;
     state.lastDayShown = 0;
     state.drawerOpen = false;
+    state.drawerTab = "public";
+    state.confideOpen = false;
+    state.confideReply = null;
+    state.confideTargetId = null;
+    state.confideUsedToday = 0;
+    state.confideUsedTotal = 0;
+    state.confideDay = 1;
+    state.confideSnapshots = {};
+    state.privateLog = [];
+    state.localEvents = [];
+    state.speakLimitNotice = "";
+    state.userScrolled = false;
+    state.voteHeld = false;
+    state.endPending = false;
+    state.endRevealed = false;
+    state.mockLastVoteTie = false;
+    $("confide-panel").classList.add("hidden");
+    $("confide-input").value = "";
+    $("speak-limit").classList.add("hidden");
+    setDrawerTab("public");
     $("log-drawer").classList.add("hidden");
     $("log-drawer").setAttribute("aria-hidden", "true");
     $("discussion-list").textContent = "";
@@ -2710,6 +3787,7 @@ state.selectedId = null;
       : ((MOCK_AGENTS.find((agent) => agent.id === murderer) || {}).name || "未知");
     state.revealName = "";
     state.mockVotesCast = 0;
+    state.mockLastVoteTie = false;
     state.mockAftermath = [];
     state.ballotTargetId = null;
     state.ballotReason = "";
@@ -2835,6 +3913,39 @@ state.selectedId = null;
     return { replies, public_log: log.slice(), phase: state.game.phase || "discussion" };
   }
 
+  function mockConfide(targetId, text) {
+    const target = findPlayer(targetId);
+    if (!target || target.is_you || target.alive === false) {
+      throw new Error("那不在桌上了。");
+    }
+    const stanceRoll = Math.random();
+    let stance = "evade";
+    if (stanceRoll < 0.3) {
+      stance = "accept";
+    } else if (stanceRoll < 0.55) {
+      stance = "refuse";
+    } else if (stanceRoll < 0.82) {
+      stance = "evade";
+    } else {
+      stance = "threaten";
+    }
+    let reply = randomOf(MOCK_CONFIDE_LINES[target.id] || MOCK_CONFIDE_FALLBACK);
+    if (target.id === state.murdererId && Math.random() < 0.6) {
+      reply = "…你问得有点多了。你自己那夜又在哪儿？";
+      stance = "threaten";
+    }
+    const trust = Number(((Math.random() * 0.5) - 0.1).toFixed(2));
+    const suspicion = Number(((Math.random() * 0.4) - 0.2).toFixed(2));
+    return {
+      stance,
+      reply,
+      trust,
+      suspicion,
+      relative: true,
+      public_line: `你与${target.name}低声说了几句。`,
+    };
+  }
+
   function mockNominate(targetId) {
     const target = findPlayer(targetId);
     if (!target || target.alive === false) {
@@ -2901,13 +4012,20 @@ state.selectedId = null;
       } else if (shortVote) {
         chosen = index === 0 ? target : (others[index % others.length] || target);
       } else if (tieCase) {
-        chosen = index < 2 ? target : (others[0] || target);
+        if (voter.id === target.id) {
+          chosen = others[0] || target;
+        } else {
+          chosen = (index === 1 || index === 2) ? target : (others[0] || target);
+        }
       } else if (voter.id === state.murdererId) {
         const safe = alive.filter((player) => player.id !== voter.id && player.id !== target.id);
         chosen = randomOf(safe.length ? safe : alive.filter((player) => player.id !== voter.id)) || target;
       } else if (Math.random() > 0.7) {
         const pool = alive.filter((player) => player.id !== voter.id && player.id !== target.id);
         chosen = randomOf(pool) || target;
+      }
+      if (chosen.id === voter.id) {
+        chosen = randomOf(alive.filter((player) => player.id !== voter.id)) || chosen;
       }
       votes.push({
         voter_id: voter.id,
@@ -2951,11 +4069,18 @@ state.selectedId = null;
     }
 
     const day = state.game.day;
+    const tallyRows = Object.entries(tally)
+      .map(([id, count]) => ({ id, count }))
+      .sort((left, right) => right.count - left.count);
+    state.mockLastVoteTie = !executedId && tied;
     if (executedId) {
       state.mockAftermath.push({
         day,
         executed: { id: executedId, name: executedName },
         killed: null,
+        tie: false,
+        tally: tallyRows,
+        threshold,
         note: `${tally[executedId] || 0} / ${threshold} 票过门槛`,
       });
     } else {
@@ -2963,8 +4088,11 @@ state.selectedId = null;
         day,
         executed: null,
         killed: null,
+        tie: tied,
+        tally: tallyRows,
+        threshold,
         note: tied
-          ? "平票，今晚无人被处决"
+          ? `平票，最高 ${topCount} 票，门槛 ${threshold} 票`
           : `最高 ${topCount} 票，未达 ${threshold} 票门槛`,
       });
     }
@@ -2972,7 +4100,7 @@ state.selectedId = null;
     const message = executedId
       ? `${executedName} 被投票处决，天黑了。`
       : (tied
-        ? "平票，今晚无人被处决。"
+        ? "平票，今晚无人被处决，僵局一直拖到天亮。"
         : `最高 ${topCount} 票，未达 ${threshold} 票门槛。`);
     const phase = winner ? "ended" : "night";
     const log = state.game.public_log;
@@ -3017,9 +4145,13 @@ state.selectedId = null;
     const youMurderer = state.murdererId === "p0";
     const forceYouDie = state.mockCase === "you-die";
     const forceAgentDie = (state.mockCase === "short" || state.mockCase === "short2") && !youMurderer;
+    const tieNight = state.mockLastVoteTie;
     let killedId = "";
     let killedName = "";
-    if (youMurderer) {
+    if (tieNight) {
+      killedId = "";
+      killedName = "";
+    } else if (youMurderer) {
       const target = findPlayer(targetId);
       if (!target || target.alive === false || target.is_you) {
         throw new Error("请选择一名在场的目标。");
@@ -3058,6 +4190,9 @@ state.selectedId = null;
           day: night,
           executed: null,
           killed: { id: killedId, name: killedName },
+          tie: false,
+          tally: [],
+          threshold: 0,
           note: `${killedName}夜里没有下楼`,
         });
       }
@@ -3071,20 +4206,24 @@ state.selectedId = null;
       winner = "murderer";
     }
 
-    const day = winner ? state.game.day : state.game.day + 1;
+    const night = state.game.day;
+    const day = winner ? night : night + 1;
     const phase = winner ? "ended" : "discussion";
-    state.game.day = day;
-    const message = killedName
-      ? `天亮时，${killedName} 没有下楼。`
-      : "天亮时，没有人死。雪把脚印盖住了。";
+    const message = tieNight
+      ? "平票僵局，今夜无人再死。天亮后接着问。"
+      : (killedName
+        ? `天亮时，${killedName} 没有下楼。`
+        : "天亮时，没有人死。雪把脚印盖住了。");
     const log = state.game.public_log;
     log.push({
       seq: nextSeq(log),
       speaker_id: "__narration",
       speaker_name: "旁白",
       text: message,
-      day,
+      day: night,
     });
+    state.game.day = day;
+    state.mockLastVoteTie = false;
     return {
       killed: killedId ? { id: killedId, name: killedName } : null,
       aftermath: state.mockAftermath.slice(),

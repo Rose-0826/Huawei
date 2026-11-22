@@ -78,6 +78,32 @@
           </div>
           <span id="discussion-count" class="discussion-count">0 条</span>
         </header>
+        <div id="confide-panel" class="confide-panel hidden" aria-live="polite" aria-label="密谈">
+          <p class="confide-kicker">
+            <span>WHISPER · 廊下低声</span>
+            <span id="confide-count" class="confide-count">今日还剩 1 次 · 本局还剩 3 次</span>
+          </p>
+          <p id="confide-lede" class="confide-lede">把声音压低，只让一个人听见。</p>
+          <div id="confide-targets" class="confide-targets" role="group" aria-label="密谈对象"></div>
+          <label class="confide-line" for="confide-input">
+            <span class="confide-label">低声说</span>
+            <textarea id="confide-input" rows="2" maxlength="240"
+                      placeholder="压低声音，说一句只有他听得见的话"></textarea>
+          </label>
+          <p id="confide-limit" class="confide-limit hidden" aria-live="polite"></p>
+          <div class="confide-actions">
+            <button id="confide-send" class="primary-button" type="button" disabled>递过去</button>
+            <button id="confide-close" class="ghost-button" type="button">收回</button>
+          </div>
+          <div id="confide-reply" class="confide-reply hidden">
+            <p class="confide-reply-who">
+              <span id="confide-reply-name"></span>
+              <span id="confide-reply-stance" class="confide-stance"></span>
+            </p>
+            <p id="confide-reply-text" class="confide-reply-text"></p>
+            <p id="confide-reply-shift" class="confide-reply-shift"></p>
+          </div>
+        </div>
         <div id="defense-card" class="defense-card hidden" aria-live="polite">
           <p class="defense-kicker">
             <span>被提名者自辩</span>
@@ -98,14 +124,16 @@
       <div class="action-hint-wrap">
         <p id="phase-hint" class="phase-hint" aria-live="polite">正在推开旅馆的门……</p>
         <p id="hall-report" class="hall-report hidden" aria-live="polite"></p>
+        <p id="speak-limit" class="speak-limit hidden" aria-live="polite"></p>
       </div>
       <div class="action-controls">
         <form id="speak-form" class="speak-form" autocomplete="off">
-          <input id="speak-input" type="text" maxlength="200"
-                 placeholder="对圆桌上的人说点什么" aria-label="你的发言">
+          <input id="speak-input" type="text" maxlength="600"
+                 placeholder="对桌上的人说点什么" aria-label="你的发言">
           <button id="speak-button" class="primary-button" type="submit" disabled>发言</button>
         </form>
         <div class="action-side">
+          <button id="confide-button" class="ghost-button hidden" type="button">密谈</button>
           <button id="secondary-button" class="ghost-button" type="button">结束讨论，提名</button>
           <button id="primary-button" class="primary-button hidden" type="button">投票</button>
         </div>
@@ -193,13 +221,23 @@
           <h2 id="log-drawer-title">本局记录</h2>
           <span id="log-drawer-count" class="log-count">0 条</span>
         </div>
-        <p class="log-lede">桌上的每一句话、每一次投票、每一个死讯，都按次序收在这一卷里。</p>
+        <div class="log-tabs" role="tablist" aria-label="卷宗分类">
+          <button id="drawer-tab-public" class="log-tab is-active" type="button" role="tab"
+                  aria-selected="true" aria-controls="log-drawer-scroll">圆桌卷宗</button>
+          <button id="drawer-tab-private" class="log-tab" type="button" role="tab"
+                  aria-selected="false" aria-controls="private-drawer-scroll">密谈</button>
+        </div>
+        <p class="log-lede">桌上的每一句话、投票的票数与理由、每一个死讯，都按次序收在这一卷里。</p>
         <button id="log-drawer-close" class="log-close" type="button"
                 aria-label="收卷并关闭记录">收卷</button>
       </header>
       <div id="log-drawer-scroll" class="log-drawer-scroll">
         <p id="log-drawer-empty" class="discussion-empty">本局还没有记录。</p>
         <ol id="log-drawer-list" class="log-drawer-list"></ol>
+      </div>
+      <div id="private-drawer-scroll" class="log-drawer-scroll hidden">
+        <p id="private-drawer-empty" class="discussion-empty">还没有私下说过话。</p>
+        <ol id="private-drawer-list" class="log-drawer-list private-list"></ol>
       </div>
       <footer class="log-foot">
         <span>MISTVALE INN · 记事簿</span>
