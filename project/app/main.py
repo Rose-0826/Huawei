@@ -19,8 +19,10 @@ from app.blood import (
     BloodView,
     ConfideOutcome,
     DefenseOutcome,
+    InspectOutcome,
     LastWordsOutcome,
     NightOutcome,
+    RunoffCandidate,
     TalkOutcome,
     VoteOutcome,
 )
@@ -86,12 +88,19 @@ class BloodRevealPublic(APIModel):
     murderer_name: str
 
 
+class BloodRunoffCandidatePublic(APIModel):
+    """重投阶段的一名候选。"""
+
+    id: str
+    name: str
+
+
 class BloodStateResponse(APIModel):
     """阵营模式一局的公开状态。"""
 
     game_id: str
     day: int
-    phase: Literal["discussion", "defense", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
     players: list[BloodPlayerPublic]
     you: BloodYouPublic
     public_log: list[BloodLogEntryPublic]
@@ -102,6 +111,10 @@ class BloodStateResponse(APIModel):
     aftermath: list[dict[str, object]] = Field(default_factory=list)
     day_history: list[dict[str, object]] = Field(default_factory=list)
     you_alive: bool = True
+    runoff_candidates: list[BloodRunoffCandidatePublic] = Field(
+        default_factory=list
+    )
+    stalemate_count: int = 0
 
 
 class BloodReplyPublic(APIModel):
@@ -117,7 +130,7 @@ class BloodTalkResponse(APIModel):
 
     replies: list[BloodReplyPublic]
     public_log: list[BloodLogEntryPublic]
-    phase: Literal["discussion", "defense", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
     notice: str = ""
 
 
@@ -143,7 +156,7 @@ class BloodNomineePublic(APIModel):
 class BloodNominateResponse(APIModel):
     """提名后进入自辩阶段。"""
 
-    phase: Literal["discussion", "defense", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
     target: BloodNomineePublic
     defense: BloodReplyPublic
     public_log: list[BloodLogEntryPublic]
@@ -177,8 +190,12 @@ class BloodVoteResponse(APIModel):
     reveal: BloodRevealPublic | None
     message: str
     public_log: list[BloodLogEntryPublic]
-    phase: Literal["discussion", "defense", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
     aftermath: list[dict[str, object]] = Field(default_factory=list)
+    runoff_candidates: list[BloodRunoffCandidatePublic] = Field(
+        default_factory=list
+    )
+    stalemate_count: int = 0
 
 
 class BloodNightRequest(APIModel):
@@ -192,7 +209,7 @@ class BloodNightResponse(APIModel):
 
     killed: BloodDeadPublic | None
     day: int
-    phase: Literal["discussion", "defense", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
     winner: Literal["good", "murderer"] | None
     reveal: BloodRevealPublic | None = None
     message: str
@@ -215,6 +232,21 @@ class BloodConfideResponse(APIModel):
     trust: int
     suspicion: int
     public_line: str
+    betrayed: bool = False
+
+
+class BloodInspectRequest(APIModel):
+    """真人查验一名在场者。"""
+
+    target_id: str = Field(min_length=1)
+
+
+class BloodInspectResponse(APIModel):
+    """查验结果只答是否凶手，不返回角色细节。"""
+
+    result: Literal["murderer", "not_murderer"]
+    public_line: str
+    remaining: int
 
 
 class BloodPrivateEntryPublic(APIModel):
@@ -275,6 +307,8 @@ BLOOD_ERRORS: dict[str, tuple[int, str]] = {
     "confide_limit": (409, f"本局最多密谈 {LIMIT_PER_GAME} 次"),
     "confide_self": (422, "不能与自己密谈"),
     "confide_text_invalid": (422, "密谈内容为空或过长"),
+    "inspect_unavailable": (409, "你现在没有可用的查验"),
+    "inspect_used": (409, "这次查验已经用过了"),
     "you_are_alive": (409, "你还在场上，不能留遗言"),
     "last_words_used": (409, "遗言已经留过了"),
     "last_words_invalid": (422, "遗言内容为空或过长"),
@@ -425,6 +459,24 @@ def create_app(
             trust=outcome.trust,
             suspicion=outcome.suspicion,
             public_line=outcome.public_line,
+            betrayed=outcome.betrayed,
+        )
+
+    @application.post(
+        "/blood/games/{game_id}/inspect",
+        response_model=BloodInspectResponse,
+    )
+    def inspect_blood_game(
+        game_id: str,
+        request: BloodInspectRequest,
+    ) -> BloodInspectResponse:
+        """真人查验一名在场者是否凶手，每局 1 次。"""
+        outcome = blood.inspect(blood_games, game_id, request.target_id)
+        _raise_blood_error(outcome.error)
+        return BloodInspectResponse(
+            result=outcome.result,
+            public_line=outcome.public_line,
+            remaining=outcome.remaining,
         )
 
     @application.get(
@@ -553,7 +605,18 @@ def _blood_state_public(view: BloodView) -> BloodStateResponse:
         aftermath=[dict(item) for item in view.aftermath],
         day_history=[dict(item) for item in view.day_history],
         you_alive=view.you_alive,
+        runoff_candidates=_blood_runoff_public(view.runoff_candidates),
+        stalemate_count=view.stalemate_count,
     )
+
+
+def _blood_runoff_public(
+    candidates: Iterable[RunoffCandidate],
+) -> list[BloodRunoffCandidatePublic]:
+    return [
+        BloodRunoffCandidatePublic(id=item.id, name=item.name)
+        for item in candidates
+    ]
 
 
 def _blood_talk_public(
@@ -627,6 +690,8 @@ def _blood_vote_public(
         public_log=_blood_log_public(state.public_log),
         phase=outcome.phase,
         aftermath=[dict(item) for item in outcome.aftermath],
+        runoff_candidates=_blood_runoff_public(outcome.runoff_candidates),
+        stalemate_count=outcome.stalemate_count,
     )
 
 

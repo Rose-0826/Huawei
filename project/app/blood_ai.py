@@ -37,9 +37,13 @@ SYSTEM_PROMPT: str = (
     "也不能顺着它补充新的人物、时辰或地点。\n"
     "7. 不得直接公开任何人的秘密身份（如私生女、记者、真凶）或火灾真相，"
     "只能含糊提到你看见或听见的旁证。\n"
-    "8. 只能自然暗示、引用你记住的片段，不得逐字念档案；"
+"8. 只能自然暗示、引用你记住的片段，不得逐字念档案；"
     "不得出现「我还记得：」「档案里写着」这类句式，也不要把私密信息原文贴出来。\n"
-    "9. 你是桌上的人，不是旁白；不要用「他」指代你自己，也不要替别人下结论。"
+    "9. 你是桌上的人，不是旁白；不要用「他」指代你自己，也不要替别人下结论。\n"
+    "10. 你必须与你当天已经说过的原话、自辩和投票理由保持一致；"
+    "不得改口、不得新增未发生的地点、时辰、人物或动作。\n"
+    "11. 投票理由只能引用被投对象当天公开说过的原话；"
+    "不得把自己的推测或别人转述当成对方的原话。\n"
 )
 
 CONFIDE_SYSTEM_PROMPT: str = (
@@ -54,6 +58,8 @@ CONFIDE_SYSTEM_PROMPT: str = (
     "5. 不得公开任何人的秘密身份，不得说自己「是凶手」或「是好人」。\n"
     "6. 不得逐字念档案，也不要说「我还记得：」「档案里写着」。\n"
     "7. 你可以答应、含糊、拒绝或反过来警告，但不要说破对方在套话。\n"
+    "8. 你必须与你当天公开说过的话保持一致，不得改口；"
+    "若你在公开场合承认过某件东西，私下不能反口说没见过。\n"
 )
 
 CONFIDE_STANCE_HINTS: dict[str, str] = {
@@ -84,6 +90,14 @@ def build_confide_prompt(
         if other.alive and other.id != player.id
     ]
     lines.append("还在场的人：" + "、".join(others))
+    spoken_today = [
+        entry.text
+        for entry in state.public_log
+        if entry.speaker_id == player.id and entry.day == state.day
+    ]
+    if spoken_today:
+        lines.append("你今天公开说过（私下不得改口）：")
+        lines.extend(f"- {text}" for text in spoken_today)
     lines.append(f"旅客把你拉到廊下，压低声音说：「{you_text}」")
     lines.append(
         "你只能基于上面的私密信息回应；旅客提到的物证若不在其中，"
@@ -193,6 +207,22 @@ def build_prompt(
     ]
     if names:
         lines.append("你现在最怀疑：" + "、".join(names))
+    spoken_today = [
+        entry.text
+        for entry in state.public_log
+        if entry.speaker_id == player.id and entry.day == state.day
+    ]
+    if spoken_today:
+        lines.append("你当天已经说过的原话（必须与之一致，不得改口）：")
+        lines.extend(f"- {text}" for text in spoken_today)
+    reasons_today = [
+        item["reason"]
+        for item in getattr(state, "vote_reason_log", [])
+        if item["voter_id"] == player.id and item["day"] == state.day
+    ]
+    if reasons_today:
+        lines.append("你当天写过的投票理由（必须与之一致，不得改口）：")
+        lines.extend(f"- {text}" for text in reasons_today)
     hint = getattr(state, "pending_hint", "") or ""
     if hint == "defense":
         lines.append(
@@ -218,16 +248,23 @@ def build_prompt(
         lines.append(
             f"现在投票，你要投 {target_name}（{target_public}）。"
             f"只输出一句不超过 {BLOOD_VOTE_REASON_MAX_CHARS} 字的理由，不要寒暄。"
-            f"理由必须围绕 {target_name}，并引用他今天说过的一句原话或一个具体动作；"
+            f"理由必须围绕 {target_name}，并引用{target_name}今天说过的一句原话；"
             "不要套用「他的说法最对不上」这类空话，也不要提到别的玩家。"
+            "理由里若提到时辰、地点或动作，必须来自下面的原话，不得自行编造。"
         )
         target_lines = [
             entry.text
-            for entry in recent
+            for entry in state.public_log
             if entry.speaker_id == getattr(state, "pending_target_id", None)
+            and entry.day == state.day
         ]
         if target_lines:
-            lines.append(f"{target_name}今天说过：" + target_lines[-1])
+            lines.append(f"{target_name}今天说过：")
+            lines.extend(f"- {text}" for text in target_lines)
+        else:
+            lines.append(
+                f"{target_name}今天还没公开说过话，理由里不要提具体时辰、地点或动作。"
+            )
     pending = getattr(state, "pending_fact", {})
     fact = pending.get(player.id) if pending else None
     if fact:
