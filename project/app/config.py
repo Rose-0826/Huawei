@@ -38,4 +38,32 @@ BLOOD_SECRET_CLAIM_TERMS: Final[tuple[str, ...]] = (
 BLOOD_SECRET_IDENTITY_TERMS: Final[tuple[str, ...]] = ("私生女", "记者")
 BLOOD_VAGUE_REWRITE: Final[str] = (
     "这些旧事我只看见一角，说不全；你还是问那晚谁上过楼吧。"
+)# 会暴露“逐字念档案”的句式，公开发言里在它之前截断
+BLOOD_MEMORY_MARKERS: Final[tuple[str, ...]] = ("我还记得", "档案里写着")
+# 未登记人名过滤的通用词白名单，避免误伤“老板娘”“小声”等正常词
+BLOOD_KNOWN_PERSON_TERMS: Final[tuple[str, ...]] = (
+    "老板",
+    "老板娘",
+    "老家",
+    "老人",
+    "老账",
+    "老规矩",
+    "老天",
+    "老实",
+    "老早",
+    "老远",
+    "老半天",
+    "老屋",
+    "老墙",
+    "老树",
+    "小声",
+    "小心",
+    "小子",
+    "小时",
+    "小半",
+    "小厮",
+    "小伙",
+    "小两口",
 )
+BLOOD_HEARSAY_PREFIX: Final[str] = "听旅客说，"
+BLOOD_VOTE_REASON_QUOTE_CHARS: Final[int] = 12

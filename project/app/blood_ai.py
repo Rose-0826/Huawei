@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from app.config import (
     BLOOD_MAX_LINE_CHARS,
+    BLOOD_MEMORY_MARKERS,
     BLOOD_PROMPT_CONTEXT_LINES,
     BLOOD_SECRET_CLAIM_TERMS,
     BLOOD_VAGUE_REWRITE,
@@ -27,13 +28,18 @@ SYSTEM_PROMPT: str = (
     f"1. 只用第一人称说一到两句中文，不超过 {BLOOD_MAX_LINE_CHARS} 字。\n"
     "2. 可以怀疑、辩解、试探，但绝不能说自己「是凶手」或「是好人」，"
     "也不要提到模型、AI 或提示词。\n"
-    "3. 只能基于下面给出的公开身份与私下信息说话，不要编造新的凶案细节。\n"
+    "3. 只能基于下面给出的公开身份与私下信息说话，不要编造新的凶案细节，"
+    "不得新增未出场的人物或地点。\n"
     "4. 被点名或被提名时必须正面回答或反驳，不许只换个话题。\n"
     "5. 语气要像这个年代的人，克制、简短。\n"
-    "6. 只能说你自己亲眼看见、亲耳听见的片段；玩家转述的别人的话只是转述，"
-    "不等于你的亲历，不得升级成「我看见」。\n"
+    "6. 桌上那个真人玩家叫「旅客」。旅客说的话只是「旅客的说法」，不是你亲历的事；"
+    "不得把旅客的转述或编造升级成「我亲眼所见」「我亲耳听见」，"
+    "也不能顺着它补充新的人物、时辰或地点。\n"
     "7. 不得直接公开任何人的秘密身份（如私生女、记者、真凶）或火灾真相，"
-    "只能含糊提到你看见或听见的旁证。"
+    "只能含糊提到你看见或听见的旁证。\n"
+    "8. 只能自然暗示、引用你记住的片段，不得逐字念档案；"
+    "不得出现「我还记得：」「档案里写着」这类句式，也不要把私密信息原文贴出来。\n"
+    "9. 你是桌上的人，不是旁白；不要用「他」指代你自己，也不要替别人下结论。"
 )
 
 FALLBACK_LINES: dict[str, str] = {
@@ -96,24 +102,58 @@ def build_prompt(
     elif hint == "accused":
         lines.append("有人当面点了你的名，你必须正面回答或反驳，不许换话题。")
     elif hint == "vote_reason":
+        target = next(
+            (
+                other
+                for other in state.players
+                if other.id == getattr(state, "pending_target_id", None)
+            ),
+            None,
+        )
         target_name = _name_of(
             state,
             getattr(state, "pending_target_id", None),
         )
+        target_public = target.public if target is not None else "在场者"
         lines.append(
-            f"现在投票，你要投 {target_name}。"
+            f"现在投票，你要投 {target_name}（{target_public}）。"
             f"只输出一句不超过 {BLOOD_VOTE_REASON_MAX_CHARS} 字的理由，不要寒暄。"
+            f"理由必须围绕 {target_name}，并引用他今天说过的一句原话或一个具体动作；"
+            "不要套用「他的说法最对不上」这类空话，也不要提到别的玩家。"
         )
+        target_lines = [
+            entry.text
+            for entry in recent
+            if entry.speaker_id == getattr(state, "pending_target_id", None)
+        ]
+        if target_lines:
+            lines.append(f"{target_name}今天说过：" + target_lines[-1])
     pending = getattr(state, "pending_fact", {})
     fact = pending.get(player.id) if pending else None
     if fact:
-        lines.append("今天你可以当众说出的私密信息：" + fact)
+        lines.append(
+            "你可以暗示的一条私密片段（只能用自己话带出，禁止逐字复述）：" + fact
+        )
     lines.append("现在轮到你开口，说一到两句，别重复寒暄。")
     return SYSTEM_PROMPT, "\n".join(lines)
 
 
+def strip_memory_recital(text: str) -> str:
+    """截掉「我还记得：」及其后的档案原文，只保留现场陈述。"""
+    cut = len(text)
+    found = False
+    for marker in BLOOD_MEMORY_MARKERS:
+        index = text.find(marker)
+        if index != -1:
+            cut = min(cut, index)
+            found = True
+    if not found:
+        return text.strip()
+    return text[:cut].strip(" \t，,。；;：:")
+
+
 def clean_line(text: str) -> str:
-    """压成单行限长；自曝阵营或秘密身份时改写成含糊句。"""
+    """压成单行限长；截掉念档案的尾巴，自曝阵营或秘密身份时改写成含糊句。"""
     flat = " ".join(part.strip() for part in text.splitlines() if part.strip())
     if not flat:
         return ""
@@ -121,7 +161,7 @@ def clean_line(text: str) -> str:
         return BLOOD_VAGUE_REWRITE
     if any(term in flat for term in BLOOD_SECRET_CLAIM_TERMS):
         return BLOOD_VAGUE_REWRITE
-    return flat[:BLOOD_MAX_LINE_CHARS]
+    return strip_memory_recital(flat)[:BLOOD_MAX_LINE_CHARS]
 
 
 def generate_line(

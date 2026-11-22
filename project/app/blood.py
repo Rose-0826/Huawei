@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -11,13 +12,16 @@ from typing import Callable, Literal
 
 from app.config import (
     BLOOD_AFTERMATH_MAX_DAYS,
+    BLOOD_HEARSAY_PREFIX,
     BLOOD_INITIAL_SUSPICION_BASE,
     BLOOD_INITIAL_SUSPICION_JITTER,
+    BLOOD_KNOWN_PERSON_TERMS,
     BLOOD_MAX_DEFENSE_SPEAK_PER_DAY,
     BLOOD_MAX_FACTS_PER_DAY,
     BLOOD_MAX_LINE_CHARS,
     BLOOD_MAX_SPEAK_PER_DAY,
     BLOOD_MAX_SUSPICION,
+    BLOOD_MEMORY_MARKERS,
     BLOOD_PRIVATE_FACTS_MAX,
     BLOOD_PRIVATE_FACTS_MIN,
     BLOOD_PRIVATE_MAX_SENSITIVITY,
@@ -28,6 +32,7 @@ from app.config import (
     BLOOD_SUSPICION_MURDERER,
     BLOOD_VAGUE_REWRITE,
     BLOOD_VOTE_REASON_MAX_CHARS,
+    BLOOD_VOTE_REASON_QUOTE_CHARS,
 )
 from app.models import Script
 
@@ -38,7 +43,7 @@ Phase = Literal["discussion", "defense", "night", "ended"]
 Winner = Literal["good", "murderer"]
 
 YOU_ID = "p0"
-YOU_NAME = "你"
+YOU_NAME = "旅客"
 YOU_PUBLIC = "旅客"
 AGENT_ROLE_IDS: tuple[tuple[str, str], ...] = (
     ("p1", "r1"),
@@ -62,6 +67,7 @@ FALLBACK_PUBLICS: dict[str, str] = {
     "p5": "马夫",
 }
 AGENT_ADDRESS_ALIASES: dict[str, tuple[str, ...]] = {
+    "p0": ("旅客",),
     "p1": ("沈玉兰", "沈老板娘", "沈老板", "老板娘"),
     "p2": ("周砚青", "周先生", "账房"),
     "p3": ("阿蘅",),
@@ -71,6 +77,14 @@ AGENT_ADDRESS_ALIASES: dict[str, tuple[str, ...]] = {
 YOU_WITNESS_KEYWORDS: tuple[str, ...] = ("书房", "楼梯口", "拨火棍")
 YOU_WITNESS_FALLBACK: str = "你记得楼上书房里闹过一阵响动，像是桌椅被撞了一下。"
 FORBIDDEN_AGENT_CLAIMS: tuple[str, ...] = ("我是凶手", "我是好人", "我是清白的")
+VAGUE_AGENT_LINES: dict[str, str] = {
+    "p1": "我一个开店的，那晚楼道上脚步不干净，可我只看清一角。",
+    "p2": "账我不想乱认，那晚的动静我听见了，细节说不圆。",
+    "p3": "我送完炭就回下房了，灯太暗，谁在楼里走动我没看真。",
+    "p4": "二楼有响动，我没敢声张，只记得不像一个人。",
+    "p5": "马棚里我守到后半夜，走廊那头有人影，我没看清脸。",
+}
+VAGUE_AGENT_DEFAULT: str = "那晚的事我只看见一角，说不全，别逼我认没看见的。"
 DEFENSE_FALLBACKS: dict[str, str] = {
     "p1": "你提名我，我认一句：那晚我进过二楼，是点灯油查账，没进书房。要查就查谁在我之后下了楼。",
     "p2": "你提名我，这笔账我不认。那晚我在楼梯口听见书房吵得凶，就没敢往前——听见和动手是两回事。",
@@ -82,12 +96,23 @@ DEFENSE_FALLBACK_DEFAULT: str = (
     "你提名我，我不能不答。那晚我在哪儿、做过什么，我都说了，没进过书房。"
 )
 VOTE_REASON_FALLBACKS: tuple[str, ...] = (
-    "我投{name}，他刚才的话前后对不上。",
-    "我投{name}，那一晚他一直没交代清楚。",
-    "我投{name}，这屋里数他的说法最含糊。",
+    "我投{name}，他方才说“{quote}”，这话绕开了时辰。",
+    "我投{name}。“{quote}”这一句，他自己没法圆回来。",
+    "我投{name}，{quote}——说了一遍，还是没讲清那晚在哪。",
+    "我投{name}，他那句“{quote}”和前面的说法接不上。",
+    "我投{name}，今天他一直含糊，尤其“{quote}”那一句。",
+    "我投{name}，从“{quote}”到现在，他都没把自己摘清。",
+    "我投{name}，白天他答得最虚，刚才也没补上一句实话。",
+    "我投{name}，别人问他一句，他只会把话头推回去。",
 )
-VOTE_REASON_TARGET_TEMPLATE: str = "我投{name}，因为今晚他的说法最对不上。"
+VOTE_REASON_NO_QUOTE_FALLBACKS: tuple[str, ...] = (
+    "我投{name}，他今天说的那几句，没一句落在自己那晚的行踪上。",
+    "我投{name}，别人问他的时候，他总把话头推到旁人身上。",
+    "我投{name}，他从白天到刚才都含糊，没法让人信。",
+    "我投{name}，他那套说法我越听越不对。",
+)
 AFTERMATH_DEATH_PLACE: str = "走廊"
+UNKNOWN_NAME_PATTERN = re.compile(r"[老小][\u4e00-\u9fa5]")
 
 
 @dataclass
@@ -573,14 +598,100 @@ def _clip_line(text: str, limit: int = BLOOD_MAX_LINE_CHARS) -> str:
     return flat.replace("\u3000", " ").strip()[:limit]
 
 
-def _sanitize_agent_line(text: str) -> str:
-    """压行限长；自曝阵营则弃用，泄露秘密身份则改为含糊句。"""
+def _sanitize_agent_line(
+    state: BloodState,
+    player: BloodPlayer,
+    text: str,
+) -> str:
+    """压行限长；去念档案尾巴、秘密身份与新编人名，自曝阵营则弃用。"""
     flat = _clip_line(text)
     if any(claim in flat for claim in FORBIDDEN_AGENT_CLAIMS):
         return ""
     if any(term in flat for term in BLOOD_SECRET_CLAIM_TERMS):
         return BLOOD_VAGUE_REWRITE
-    return flat
+    flat = _strip_memory_tail(flat)
+    flat = _scrub_private_fact_text(state, player, flat)
+    if not flat:
+        return ""
+    flat = _filter_unknown_names(state, flat)
+    flat = _prefix_hearsay(state, flat)
+    return _clip_line(flat)
+
+
+def _strip_memory_tail(text: str) -> str:
+    """截掉「我还记得」「档案里写着」及其后的原文。"""
+    cut = len(text)
+    found = False
+    for marker in BLOOD_MEMORY_MARKERS:
+        index = text.find(marker)
+        if index != -1:
+            cut = min(cut, index)
+            found = True
+    if not found:
+        return text
+    return text[:cut].strip(" \t，,。；;：:")
+
+
+def _scrub_private_fact_text(
+    state: BloodState,
+    player: BloodPlayer,
+    text: str,
+) -> str:
+    """公开发言若逐字出现任一档案事实原文，整句弃用，交给角色化兜底。"""
+    cores = [fact.text for fact in state.script.facts]
+    for other in state.players:
+        cores.extend(other.private_info)
+    for core in cores:
+        core = core.strip()
+        if len(core) >= 6 and core in text:
+            return ""
+    return text
+
+
+def _known_person_terms(state: BloodState) -> set[str]:
+    """收集本局已登记的人名、称呼与通用词，供未登记人名过滤使用。"""
+    terms: set[str] = set(BLOOD_KNOWN_PERSON_TERMS)
+    for player in state.players:
+        terms.add(player.name)
+        terms.add(player.public)
+        terms.update(AGENT_ADDRESS_ALIASES.get(player.id, ()))
+    terms.add(state.script.victim.name)
+    return {term for term in terms if term}
+
+
+def _filter_unknown_names(state: BloodState, text: str) -> str:
+    """把「老X」「小X」这类未登记的人名替换成含糊称呼。"""
+    terms = _known_person_terms(state)
+
+    def _replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if any(token == term or term.startswith(token) for term in terms):
+            return token
+        return "旁人"
+
+    return UNKNOWN_NAME_PATTERN.sub(_replace, text)
+
+
+def _prefix_hearsay(state: BloodState, text: str) -> str:
+    """agent 把旅客转述说成亲历时，补上「听旅客说」前缀。"""
+    if "我亲眼" not in text and "我亲耳" not in text:
+        return text
+    if text.startswith(BLOOD_HEARSAY_PREFIX):
+        return text
+    you_lines = [
+        entry.text for entry in state.public_log if entry.speaker_id == YOU_ID
+    ]
+    if not you_lines:
+        return text
+    last = you_lines[-1]
+    if any(last[index : index + 3] in text for index in range(len(last) - 2)):
+        return BLOOD_HEARSAY_PREFIX + text
+    return text
+
+
+def _vague_agent_line(player: BloodPlayer) -> str:
+    """截断后为空时，用角色化的含糊句兜底。"""
+    return VAGUE_AGENT_LINES.get(player.id, VAGUE_AGENT_DEFAULT)
 
 
 def _fallback_line(
@@ -619,7 +730,7 @@ def _agent_speak(
     state.pending_fact[player.id] = fact or ""
     text = ""
     try:
-        text = _sanitize_agent_line(reply_fn(state, player))
+        text = _sanitize_agent_line(state, player, reply_fn(state, player))
     except Exception:  # 模型故障不打断回合，退回角色模板
         logger.warning("agent 发言生成失败：%s", player.id, exc_info=True)
     finally:
@@ -627,9 +738,7 @@ def _agent_speak(
         state.pending_target_id = None
         state.pending_fact.pop(player.id, None)
     if not text:
-        text = _fallback_line(state, player, hint)
-    elif fact:
-        text = f"{text} 我还记得：{fact}"
+        text = _vague_agent_line(player)
     text = _clip_line(text)
     _say(state, player.id, player.name, text)
     _apply_public_text(state, player.id, text)
@@ -898,6 +1007,8 @@ def _sim_kill(
 
 def _simulate_aftermath(
     state: BloodState,
+    executed: BloodPlayer | None = None,
+    killed: BloodPlayer | None = None,
 ) -> tuple[list[dict[str, object]], Winner | None]:
     """真人出局后，用纯规则推演剩余处决与夜杀，直到分出胜负。"""
     roles = {player.id: player.role for player in state.players}
@@ -905,38 +1016,39 @@ def _simulate_aftermath(
     winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
     entries: list[dict[str, object]] = []
     day = state.day
-    if winner is None and state.phase in ("discussion", "defense"):
-        killed = _sim_kill(state, alive_ids)
-        if killed is not None:
-            alive_ids.discard(killed.id)
-            winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
-        entry = _aftermath_entry(state, day, None, killed)
+    if executed is not None or killed is not None:
+        entry = _aftermath_entry(state, day, executed, killed)
         if entry is not None:
             entries.append(entry)
         day += 1
-    elif winner is None:
-        day += 1
     while winner is None and day <= state.day + BLOOD_AFTERMATH_MAX_DAYS:
-        executed = _sim_vote(state, alive_ids)
-        if executed is not None:
-            alive_ids.discard(executed.id)
+        executed_now = _sim_vote(state, alive_ids)
+        if executed_now is not None:
+            executed_now.alive = False
+            alive_ids.discard(executed_now.id)
         winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
-        killed = None
+        killed_now = None
         if winner is None:
-            killed = _sim_kill(state, alive_ids)
-            if killed is not None:
-                alive_ids.discard(killed.id)
+            killed_now = _sim_kill(state, alive_ids)
+            if killed_now is not None:
+                killed_now.alive = False
+                alive_ids.discard(killed_now.id)
                 winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
-        entry = _aftermath_entry(state, day, executed, killed)
+        entry = _aftermath_entry(state, day, executed_now, killed_now)
         if entry is not None:
             entries.append(entry)
         day += 1
     return entries, winner
 
 
-def _end_with_you_out(state: BloodState, reason: str) -> None:
+def _end_with_you_out(
+    state: BloodState,
+    reason: str,
+    executed: BloodPlayer | None = None,
+    killed: BloodPlayer | None = None,
+) -> None:
     """真人出局后进入终局，并用纯规则补全卷宗摘要与最终胜负。"""
-    aftermath, winner = _simulate_aftermath(state)
+    aftermath, winner = _simulate_aftermath(state, executed, killed)
     state.aftermath = aftermath
     if winner is not None:
         state.winner = winner
@@ -975,13 +1087,77 @@ def _system_kill_target(state: BloodState) -> BloodPlayer | None:
 
 
 
+def _scrub_other_names(
+    state: BloodState,
+    text: str,
+    keep: BloodPlayer,
+) -> str:
+    """把句子中 target 以外的玩家姓名替换掉，避免理由攀扯旁人。"""
+    cleaned = text
+    for player in state.players:
+        if player.id == keep.id:
+            continue
+        aliases = AGENT_ADDRESS_ALIASES.get(player.id, (player.name,))
+        for alias in (*aliases, player.name):
+            if alias:
+                cleaned = cleaned.replace(alias, "某人")
+    return cleaned
+
+
+def _reason_quote(state: BloodState, target: BloodPlayer) -> str:
+    """取 target 当天最近一句公开发言，作为投票理由里的具体引用。"""
+    for entry in reversed(state.public_log):
+        if entry.speaker_id != target.id:
+            continue
+        cleaned = _scrub_other_names(state, entry.text, target)
+        if "我自己" in cleaned or "我投" in cleaned:
+            continue
+        quote = _clip_line(cleaned, BLOOD_VOTE_REASON_QUOTE_CHARS)
+        quote = quote.strip(" \t，,。；;：:\"'“”")
+        if quote:
+            return quote
+    return ""
+
+
 def _fallback_reason(
     state: BloodState,
     voter: BloodPlayer,
     target: BloodPlayer,
 ) -> str:
-    index = int(voter.id[1:]) % len(VOTE_REASON_FALLBACKS)
-    return VOTE_REASON_FALLBACKS[index].format(name=target.name)
+    """按 voter/target 轮换生成不重样、且绑定当日发言的兜底理由。"""
+    quote = _reason_quote(state, target)
+    voter_index = int(voter.id[1:])
+    target_index = int(target.id[1:])
+    if quote:
+        index = (voter_index * 3 + target_index) % len(VOTE_REASON_FALLBACKS)
+        reason = VOTE_REASON_FALLBACKS[index].format(
+            name=target.name,
+            quote=quote,
+        )
+        if not _names_self(reason) and not _reason_names_other(
+            state, reason, target
+        ):
+            return reason
+    no_quote_index = (voter_index + target_index) % len(
+        VOTE_REASON_NO_QUOTE_FALLBACKS
+    )
+    return VOTE_REASON_NO_QUOTE_FALLBACKS[no_quote_index].format(
+        name=target.name
+    )
+
+
+def _names_self(reason: str) -> bool:
+    """理由里出现“投我自己/我自己”等自指时判为不合格。"""
+    return any(term in reason for term in ("我自己", "投我自己", "投我"))
+
+
+def _retarget_self_reference(reason: str, target: BloodPlayer) -> str:
+    """target 是真人时，把“我投你”改写成“我投旅客”，避免自指。"""
+    if not target.is_you:
+        return reason
+    return reason.replace("我投你", f"我投{target.name}").replace(
+        "投你", f"投{target.name}"
+    )
 
 
 def _reason_names_other(
@@ -1005,16 +1181,21 @@ def _aligned_reason(
     target: BloodPlayer,
     raw: str,
 ) -> str:
-    """把理由绑定到实际投票目标；提到他人或泄露秘密时改用模板句。"""
+    """把理由绑定到实际投票目标；提到他人、自指或泄露秘密时改用轮换模板。"""
     reason = _clip_line(raw, BLOOD_VOTE_REASON_MAX_CHARS)
     if not reason:
         return _fallback_reason(state, voter, target)
     if any(claim in reason for claim in FORBIDDEN_AGENT_CLAIMS):
-        return VOTE_REASON_TARGET_TEMPLATE.format(name=target.name)
+        return _fallback_reason(state, voter, target)
     if any(term in reason for term in BLOOD_SECRET_CLAIM_TERMS):
-        return VOTE_REASON_TARGET_TEMPLATE.format(name=target.name)
+        return _fallback_reason(state, voter, target)
+    if _names_self(reason):
+        return _fallback_reason(state, voter, target)
     if _reason_names_other(state, reason, target):
-        return VOTE_REASON_TARGET_TEMPLATE.format(name=target.name)
+        return _fallback_reason(state, voter, target)
+    reason = _retarget_self_reference(reason, target)
+    if _reason_names_other(state, reason, target):
+        return _fallback_reason(state, voter, target)
     return reason
 
 
@@ -1057,6 +1238,17 @@ def _resolve_votes(
     if len(leaders) != 1 or top < threshold:
         return dict(tally), threshold, None
     return dict(tally), threshold, _player(state, leaders[0])
+
+
+def _no_execution_message(tally: dict[str, int], threshold: int) -> str:
+    """区分平票流局与未达门槛，避免把平票说成“没过门槛”。"""
+    if not tally:
+        return "平票，今晚无人被处决"
+    top = max(tally.values())
+    leaders = [count for count in tally.values() if count == top]
+    if len(leaders) > 1:
+        return "平票，今晚无人被处决"
+    return f"最高 {top} 票，未达 {threshold} 票门槛，今晚无人被处决"
 
 
 def _vote_log_entry(state: BloodState, votes: list[VoteResult]) -> dict[str, object]:
@@ -1180,16 +1372,17 @@ def vote(
         _say(state, "system", "旁白", f"{executed.name} 被投票处决。")
         state.message = f"{executed.name} 被处决，天黑了。"
     else:
-        top = max(tally.values(), default=0)
-        state.message = (
-            f"最高 {top} 票，没过 {threshold} 票门槛，没有人被处决。"
-        )
+        state.message = _no_execution_message(tally, threshold)
     _log(state, _vote_log_entry(state, votes))
     winner = _judge(state)
-    if winner is not None:
+    if not you.alive:
+        _end_with_you_out(
+            state,
+            f"{you.name} 出局了，本局到此为止。",
+            executed=executed,
+        )
+    elif winner is not None:
         _declare_winner(state, winner, _win_text(winner))
-    elif not you.alive:
-        _end_with_you_out(state, f"{you.name} 出局了，本局到此为止。")
     else:
         state.phase = "night"
     return VoteOutcome(
@@ -1267,8 +1460,12 @@ def night(
         },
     )
     winner = _judge(state)
-    if winner is not None:
-        _declare_winner(state, winner, _win_text(winner))
+    if not you.alive:
+        _end_with_you_out(
+            state,
+            f"{you.name} 没能等到天亮，本局到此为止。",
+            killed=victim,
+        )
         return NightOutcome(
             ok=True,
             error=None,
@@ -1280,8 +1477,8 @@ def night(
             message=state.message,
             aftermath=tuple(state.aftermath),
         )
-    if not you.alive:
-        _end_with_you_out(state, f"{you.name} 没能等到天亮，本局到此为止。")
+    if winner is not None:
+        _declare_winner(state, winner, _win_text(winner))
         return NightOutcome(
             ok=True,
             error=None,
