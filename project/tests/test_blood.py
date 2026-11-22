@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app import blood, blood_ai
 from app.blood import BloodPlayer, BloodState, BloodStore
-from app.game import GameStore
+
 from app.llm import LLMUnavailable
 from app.main import create_app
 from app.models import Script
@@ -104,7 +104,7 @@ def api(
 ) -> tuple[TestClient, BloodStore]:
     store = BloodStore(rng=random.Random(7))
     client = TestClient(
-        create_app(script, GameStore(), blood_store=store, blood_llm=FakeLLM())
+        create_app(script, blood_store=store, blood_llm=FakeLLM())
     )
     return client, store
 
