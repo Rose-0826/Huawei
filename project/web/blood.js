@@ -16,9 +16,14 @@
   };
 
   const ROLE_LABEL = {
-    villager: "村民",
-    murderer: "凶手",
+    villager: "镇民",
+    minion: "爪牙",
+    murderer: "恶魔",
   };
+
+  const EVIL_ROLES = ["murderer", "minion"];
+
+  const SUCCESSION_HINT = "邪恶没有结束，桌上还得再来一轮。";
 
   const WINNER_LABEL = {
     villagers: "好人胜",
@@ -129,6 +134,15 @@
     mockSpectateStep: 0,
     mockSpectateVotes: [],
     mockGhostVote: null,
+    revealInfo: null,
+
+    mockMinionId: "",
+    mockOriginalMinionId: "",
+    mockOriginalDemonId: "",
+    mockSuccession: [],
+    mockPoisonedId: "",
+    mockWhisperDay: 0,
+    successionPending: false,
   };
 
   function node(tag, className, text) {
@@ -250,10 +264,17 @@
 
   function normalizeRole(value) {
     const raw = String(value === undefined || value === null ? "" : value).trim().toLowerCase();
-    if (["murderer", "killer", "wolf", "凶手", "杀手", "狼"].includes(raw)) {
+    if (["murderer", "killer", "wolf", "demon", "凶手", "杀手", "狼", "恶魔"].includes(raw)) {
       return "murderer";
     }
+    if (["minion", "accomplice", "claw", "爪牙", "帮凶", "走狗"].includes(raw)) {
+      return "minion";
+    }
     return "villager";
+  }
+
+  function isEvilRole(role) {
+    return EVIL_ROLES.includes(role);
   }
 
   const NARRATION_FEMALE_HINTS = ["沈玉兰", "阿蘅", "刘妈", "老板娘", "女佣", "她"];
@@ -294,6 +315,41 @@
   function sanitizeLine(text, narration = false) {
     const clean = stripDanglingMemory(text);
     return narration ? softenNarration(clean) : clean;
+  }
+
+  function publicSafeText(text, narration = false) {
+    const raw = String(text || "");
+    if (!narration) {
+      return raw;
+    }
+    if (state.game && state.game.winner) {
+      return raw;
+    }
+    if (/邪恶没有结束|游戏继续/u.test(raw)) {
+      return raw;
+    }
+    if (/下药|被下药|毒醉|中毒/u.test(raw)) {
+      const victim = raw.match(/(?:天亮时[，,]?\s*)?(你|[^\s，,。；;]{1,6})\s*(?:被下药|被毒|中毒|毒醉)/u);
+      return victim ? `天亮时，${victim[1]} 没有下楼。` : "天亮时，有人没有下楼。";
+    }
+    if (/爪牙|传位|接位|继位|新恶魔/u.test(raw)) {
+      if (/没有下楼|死在|天亮|不见/u.test(raw)) {
+        return raw.replace(/爪牙|新恶魔|传位|接位|继位/gu, "有人");
+      }
+      return SUCCESSION_HINT;
+    }
+    return raw;
+  }
+
+  function isWhisperText(text) {
+    const raw = String(text || "");
+    return /低声[^，。]{0,6}(?:说了|几句|说了几句)/u.test(raw)
+      || /廊下低声/u.test(raw);
+  }
+
+  function isSelfWhisperText(text) {
+    const raw = String(text || "").trim();
+    return /^你(?:与|和|跟)/u.test(raw) || raw.includes("你与") || raw.includes("你和");
   }
 
   function normalizeEntry(entry, fallbackSeq) {
@@ -564,7 +620,9 @@ state.lastVotes = null;
       state.thresholdReduced = false;
       state.mockSpectateStep = 0;
       state.mockSpectateVotes = [];
-      state.mockGhostVote = null;
+state.mockGhostVote = null;
+      state.revealInfo = null;
+      state.successionPending = false;
 
       state.drawerTab = "public";
       clearBubble();
@@ -674,6 +732,7 @@ state.lastVotes = null;
     }
 
     captureReveal(data);
+    noteSuccessionHint(data);
     if (data.winner && !state.endRevealed) {
       state.endPending = true;
     }
@@ -816,16 +875,26 @@ state.lastVotes = null;
     if (!data || typeof data !== "object") {
       return "";
     }
+    const reveal = data.reveal && typeof data.reveal === "object" ? data.reveal : {};
     const candidates = [
+      reveal.final_murderer_id,
+      reveal.final_murderer_name,
+      reveal.final_murderer,
+      data.final_murderer_id,
+      data.final_murderer_name,
+      data.final_murderer,
       data.murderer,
       data.culprit,
       data.murderer_id,
       data.murderer_name,
-      data.reveal && data.reveal.murderer,
-      data.reveal && data.reveal.culprit,
-      data.reveal && data.reveal.murderer_id,
-      data.reveal && data.reveal.murderer_name,
-      data.reveal && data.reveal.name,
+      reveal.murderer,
+      reveal.culprit,
+      reveal.murderer_id,
+      reveal.murderer_name,
+      reveal.demon_id,
+      reveal.demon_name,
+      reveal.demon,
+      reveal.name,
     ];
     for (const candidate of candidates) {
       const id = idOf(candidate);
@@ -844,15 +913,210 @@ state.lastVotes = null;
         return player ? displayName(player) : candidate.name;
       }
     }
+    if (state.revealInfo && state.revealInfo.final && state.revealInfo.final.name) {
+      return state.revealInfo.final.name;
+    }
+    if (state.revealInfo && state.revealInfo.demon && state.revealInfo.demon.name) {
+      return state.revealInfo.demon.name;
+    }
     return "";
   }
 
+  function personRef(value) {
+    if (!value) {
+      return { id: "", name: "" };
+    }
+    const id = idOf(value);
+    if (id) {
+      const player = findPlayer(id);
+      return { id, name: player ? displayName(player) : String(id) };
+    }
+    if (typeof value === "string") {
+      const player = players().find((item) => item.name === value || item.id === value);
+      return { id: player ? player.id : "", name: player ? displayName(player) : value };
+    }
+    if (typeof value === "object" && value.name) {
+      const player = players().find((item) => item.name === value.name || item.id === value.name);
+      return {
+        id: player ? player.id : String(value.id || ""),
+        name: player ? displayName(player) : String(value.name),
+      };
+    }
+    return { id: "", name: "" };
+  }
+
+  function firstPersonRef(pairs) {
+    for (const pair of pairs) {
+      if (!pair || pair[1] === undefined || pair[1] === null || pair[1] === "") {
+        continue;
+      }
+      const ref = personRef(pair[1]);
+      if (ref.name || ref.id) {
+        return ref;
+      }
+    }
+    return { id: "", name: "" };
+  }
+
+  function normalizeSuccession(raw) {
+    if (!raw) {
+      return [];
+    }
+    const list = Array.isArray(raw) ? raw : (typeof raw === "object" ? [raw] : []);
+    if (typeof raw === "string") {
+      return [{ label: raw, day: 0, from: "", to: "" }];
+    }
+    const steps = [];
+    for (const item of list) {
+      if (typeof item === "string") {
+        const ref = personRef(item);
+        steps.push({ label: ref.name ? `原爪牙 ${ref.name} 接位` : item, day: 0, from: "", to: ref.name });
+        continue;
+      }
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const from = firstPersonRef([
+        ["from_name", item.from_name],
+        ["from", item.from],
+        ["from_id", item.from_id],
+        ["old_name", item.old_name],
+        ["old_id", item.old_id],
+        ["demon_name", item.demon_name],
+        ["demon_id", item.demon_id],
+      ]);
+      const to = firstPersonRef([
+        ["to_name", item.to_name],
+        ["to", item.to],
+        ["to_id", item.to_id],
+        ["new_name", item.new_name],
+        ["new_id", item.new_id],
+        ["minion_name", item.minion_name],
+        ["minion_id", item.minion_id],
+      ]);
+      const day = Number(item.day || item.round || item.night) || 0;
+      const label = String(item.label || item.text || item.note || "").trim();
+      if (!from.name && !to.name && !label) {
+        continue;
+      }
+      steps.push({ label, day, from: from.name || "", to: to.name || "" });
+    }
+    return steps;
+  }
+
   function captureReveal(data) {
+    if (!data || typeof data !== "object") {
+      return;
+    }
+    const reveal = data.reveal && typeof data.reveal === "object" ? data.reveal : null;
+    const source = reveal || data;
+    const info = state.revealInfo || {
+      demon: { id: "", name: "" },
+      final: { id: "", name: "" },
+      minion: { id: "", name: "" },
+      poisoned: { id: "", name: "" },
+      succession: [],
+    };
+    const demon = firstPersonRef([
+      ["murderer_id", source.murderer_id],
+      ["murderer", source.murderer],
+      ["culprit", source.culprit],
+      ["murderer_name", source.murderer_name],
+      ["demon_id", source.demon_id],
+      ["demon", source.demon],
+      ["demon_name", source.demon_name],
+      ["killer_id", source.killer_id],
+    ]);
+    if (demon.name || demon.id) {
+      info.demon = demon;
+    }
+    const final = firstPersonRef([
+      ["final_murderer_id", source.final_murderer_id],
+      ["final_murderer_name", source.final_murderer_name],
+      ["final_murderer", source.final_murderer],
+      ["new_murderer_id", source.new_murderer_id],
+      ["new_murderer_name", source.new_murderer_name],
+      ["new_murderer", source.new_murderer],
+      ["current_murderer_id", source.current_murderer_id],
+    ]);
+    if (final.name || final.id) {
+      info.final = final;
+    }
+    const minion = firstPersonRef([
+      ["minion_id", source.minion_id],
+      ["minion", source.minion],
+      ["minion_name", source.minion_name],
+      ["accomplice_id", source.accomplice_id],
+      ["accomplice", source.accomplice],
+    ]);
+    if (minion.name || minion.id) {
+      info.minion = minion;
+    }
+    const poisoned = firstPersonRef([
+      ["poisoned_id", source.poisoned_id],
+      ["poisoned", source.poisoned],
+      ["poisoned_name", source.poisoned_name],
+      ["drunk_id", source.drunk_id],
+      ["drunk", source.drunk],
+      ["drunk_name", source.drunk_name],
+    ]);
+    if (poisoned.name || poisoned.id) {
+      info.poisoned = poisoned;
+    }
+    const successionRaw = source.succession !== undefined
+      ? source.succession
+      : (source.succeeded !== undefined ? source.succeeded : source.handoff);
+    if (successionRaw !== undefined) {
+      const steps = normalizeSuccession(successionRaw);
+      if (steps.length) {
+        info.succession = steps;
+      } else if (successionRaw === true) {
+        const holder = minion.name ? minion : info.minion;
+        if (holder.name) {
+          info.succession = [{ label: `原爪牙 ${holder.name} 接位`, day: 0, from: "", to: holder.name }];
+        }
+      }
+    }
+    if (!info.final.name && info.succession.length) {
+      const lastStep = [...info.succession].reverse().find((step) => step.to);
+      if (lastStep) {
+        const ref = personRef(lastStep.to);
+        if (ref.name) {
+          info.final = ref;
+        }
+      }
+    }
+    if (!info.final.name && info.demon.name) {
+      info.final = { ...info.demon };
+    }
+    if (!info.minion.name && info.succession.length) {
+      const firstStep = info.succession.find((step) => step.to);
+      if (firstStep) {
+        const ref = personRef(firstStep.to);
+        if (ref.name) {
+          info.minion = ref;
+        }
+      }
+    }
+    if (!info.demon.name && info.succession.length) {
+      const firstFrom = info.succession.find((step) => step.from);
+      if (firstFrom) {
+        const ref = personRef(firstFrom.from);
+        if (ref.name) {
+          info.demon = ref;
+        }
+      }
+    }
+state.revealInfo = info;
+    const explicitFinal = Boolean(final.name || final.id);
     const found = revealNameFrom(data);
-    if (found) {
+    if (!explicitFinal && info.final.name) {
+      state.revealName = info.final.name;
+    } else if (found) {
       state.revealName = found;
     }
   }
+
 
   function startGame(game) {
     state.gameId = game.game_id || "";
@@ -915,11 +1179,17 @@ state.lastVotes = null;
     const card = $("identity-card");
     const roleEl = $("identity-role");
     const detailEl = $("identity-detail");
+    const mateEl = $("identity-mate");
     if (!state.game) {
       card.dataset.role = "villager";
       roleEl.textContent = "身份待定";
       detailEl.textContent = "正在开局……";
       detailEl.title = "";
+      if (mateEl) {
+        mateEl.textContent = "";
+        mateEl.title = "";
+        mateEl.classList.add("hidden");
+      }
       return;
     }
     card.dataset.role = role;
@@ -928,17 +1198,32 @@ state.lastVotes = null;
     if (state.you && Array.isArray(state.you.private_info)) {
       details.push(...state.you.private_info);
     }
-    if (state.you && Array.isArray(state.you.teammates) && state.you.teammates.length) {
-      const names = state.you.teammates
-        .map((mate) => (typeof mate === "string" ? (playerName(mate) || mate) : (mate && mate.name) || "？"))
-        .filter(Boolean);
-      if (names.length) {
-        details.push(`同伙：${names.join("、")}`);
-      }
+    let mateNames = [];
+    if (isEvilRole(role) && state.you && Array.isArray(state.you.teammates) && state.you.teammates.length) {
+      mateNames = state.you.teammates
+        .map((mate) => {
+          if (typeof mate === "string") {
+            return playerName(mate) || mate;
+          }
+          if (mate && typeof mate === "object") {
+            return mate.name || (mate.id ? playerName(mate.id) : "");
+          }
+          return "";
+        })
+        .filter((name) => name && name !== "你");
     }
     const detail = details.join(" · ");
-    detailEl.textContent = detail || (role === "murderer" ? "只有你知道自己做了什么。" : "你手上没有刀。");
+    const fallback = role === "murderer"
+      ? "刀在你手里，别让目光落到自己身上。"
+      : (role === "minion" ? "你不是恶魔，可你知道刀在谁手里。" : "你手上没有刀，但你也不能证明。");
+    detailEl.textContent = detail || fallback;
     detailEl.title = detail;
+    if (mateEl) {
+      const mateLine = mateNames.length ? `你的同伴：${mateNames.join("、")}` : "";
+      mateEl.textContent = mateLine;
+      mateEl.title = mateLine;
+      mateEl.classList.toggle("hidden", !mateLine);
+    }
   }
 
   function renderHeader() {
@@ -1120,6 +1405,9 @@ state.lastVotes = null;
     const narration = entry.speaker_id === "__narration"
       || entry.speaker_id === "narrator"
       || entry.speaker_name === "旁白";
+    const text = publicSafeText(entry.text || "", narration);
+    const whisper = narration && isWhisperText(text);
+    const selfWhisper = whisper && isSelfWhisperText(text);
     const item = node("li", "log-entry");
     if (isYou) {
       item.classList.add("you");
@@ -1127,17 +1415,22 @@ state.lastVotes = null;
     if (narration) {
       item.classList.add("narration");
     }
-    if (narration && /没有下楼|死在|夜杀|天亮时/.test(entry.text || "")) {
+    if (narration && /没有下楼|死在|夜杀|天亮时/.test(text)) {
       item.classList.add("death");
+    }
+    if (whisper) {
+      item.classList.add("whisper");
+      item.classList.add(selfWhisper ? "whisper-self" : "whisper-pair");
     }
     if (freshIndex >= 0) {
       item.classList.add("log-appear");
       item.style.animationDelay = `${Math.min(freshIndex, 6) * 70}ms`;
     }
-    item.append(
-      node("p", "log-who", isYou ? "你" : entry.speaker_name),
-      node("p", "log-text", entry.text),
-    );
+    const who = node("p", "log-who", isYou ? "你" : entry.speaker_name);
+    if (whisper) {
+      who.append(node("span", "log-whisper-tag", selfWhisper ? "你的私谈" : "廊下"));
+    }
+    item.append(who, node("p", "log-text", text));
     return item;
   }
 
@@ -2095,7 +2388,7 @@ state.lastVotes = null;
     if (!state.game || state.busy || isFinished() || !youAlive()) {
       return false;
     }
-    if (youRole() === "murderer" || state.inspectUsed) {
+    if (isEvilRole(youRole()) || state.inspectUsed) {
       return false;
     }
     const phase = currentPhase();
@@ -2107,7 +2400,7 @@ state.lastVotes = null;
 
   function inspectCountText() {
     const left = inspectRemaining();
-    if (youRole() === "murderer") {
+    if (isEvilRole(youRole())) {
       return "你没有查验";
     }
     return left > 0 ? `本局还剩 ${left} 次` : "本局查验已用";
@@ -2135,9 +2428,9 @@ state.lastVotes = null;
     panel.classList.toggle("has-result", hasResult);
     $("inspect-count").textContent = inspectCountText();
 
-    const isMurderer = youRole() === "murderer";
+    const isMurderer = isEvilRole(youRole());
     $("inspect-lede").textContent = isMurderer
-      ? "你没有查验。只有好人手里才有这一项。"
+      ? "你没有查验。只有镇民手里才有这一项。"
       : (hasResult
         ? (state.inspectResult.revealed
           ? "牌已经翻在桌上，所有人都看见了你查的是谁。"
@@ -2235,8 +2528,8 @@ state.lastVotes = null;
     if (!state.game || isFinished() || !youAlive()) {
       return;
     }
-    if (youRole() === "murderer") {
-      showToast("你没有查验——只有好人手里才有这一项。", "warn");
+    if (isEvilRole(youRole())) {
+      showToast("你没有查验——只有镇民手里才有这一项。", "warn");
       return;
     }
     if (state.inspectAvailable === false) {
@@ -2563,8 +2856,59 @@ state.lastVotes = null;
     }
   }
 
+  function appendNarrationOnce(text) {
+    const log = state.game && state.game.public_log;
+    if (!log || !text) {
+      return;
+    }
+    const line = String(text);
+    if (log.slice(-8).some((entry) => String(entry.text || "").trim() === line)) {
+      return;
+    }
+    log.push({
+      seq: nextSeq(log),
+      speaker_id: "__narration",
+      speaker_name: "旁白",
+      text: line,
+      day: state.game.day,
+    });
+  }
+
+  function hasSuccessionFlag(data) {
+    if (!data || typeof data !== "object") {
+      return false;
+    }
+    for (const key of ["succession", "succession_occurred", "succeeded", "handoff"]) {
+      const value = data[key];
+      if (Array.isArray(value) ? value.length > 0 : Boolean(value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function noteSuccessionHint(data) {
+    if (!state.game || data && data.winner) {
+      return;
+    }
+    if (!hasSuccessionFlag(data)) {
+      return;
+    }
+    appendNarrationOnce(SUCCESSION_HINT);
+    state.successionPending = true;
+    if (!state.game.winner) {
+      state.report = SUCCESSION_HINT;
+    }
+  }
+
   function showReport(text, kind = "info") {
-    state.report = text || "";
+    const playing = Boolean(state.game) && !state.game.winner;
+    let line = text || "";
+    if (playing && state.successionPending) {
+      line = SUCCESSION_HINT;
+      state.successionPending = false;
+    }
+    state.report = playing ? publicSafeText(line, true) : line;
     state.reportKind = kind;
     renderReport();
   }
@@ -2844,16 +3188,16 @@ state.lastVotes = null;
       && (phase === "discussion" || phase === "defense");
     inspect.classList.toggle("hidden", !inspectVisible);
     if (inspectVisible) {
-      const isMurderer = role === "murderer";
+      const isMurderer = isEvilRole(role);
       const unavailable = state.inspectAvailable === false;
       inspect.classList.toggle("is-locked", isMurderer || unavailable);
       inspect.textContent = isMurderer
         ? "查验（你没有）"
         : (unavailable ? "查验（暂不可用）" : (state.inspectUsed ? "查验（已用）" : (state.inspectOpen ? "收起查验" : "查验")));
-      inspect.disabled = !isMurderer && (state.busy || state.inspectUsed || unavailable);
+      inspect.disabled = isMurderer || state.busy || state.inspectUsed || unavailable;
       inspect.setAttribute("aria-disabled", isMurderer || state.inspectUsed || unavailable ? "true" : "false");
       inspect.title = isMurderer
-        ? "你没有查验——只有好人手里才有这一项"
+        ? "你没有查验——只有镇民手里才有这一项"
         : (unavailable
           ? "查验接口还没就绪，本轮先不开放"
           : (state.inspectUsed ? "本局查验已用" : "只掀一个人的底牌，查完桌上都会知道"));
@@ -2961,6 +3305,16 @@ state.lastVotes = null;
   }
 
   function murdererStands() {
+    const info = resolveRevealInfo();
+    const target = info && info.final && (info.final.id || info.final.name)
+      ? info.final
+      : (info && info.demon && (info.demon.id || info.demon.name) ? info.demon : null);
+    if (target) {
+      const player = players().find((item) => item.id === target.id || item.name === target.name);
+      if (player) {
+        return player.alive !== false;
+      }
+    }
     const name = resolveRevealName();
     if (!name || name === "终局揭晓") {
       return youRole() === "murderer" && youAlive();
@@ -2972,6 +3326,36 @@ state.lastVotes = null;
       return player.alive !== false;
     }
     return youRole() === "murderer" && youAlive();
+  }
+
+  function resolveRevealInfo() {
+    if (state.revealInfo) {
+      return state.revealInfo;
+    }
+    captureReveal(state.game);
+    return state.revealInfo;
+  }
+
+  function successionText(info) {
+    const steps = info && Array.isArray(info.succession) ? info.succession : [];
+    if (!steps.length) {
+      return "";
+    }
+    const parts = steps.map((step) => {
+      const day = Number(step.day) || 0;
+      const prefix = day ? `第 ${day} 天 · ` : "";
+      if (step.from && step.to) {
+        return `${prefix}${step.from} 倒下后，原爪牙 ${step.to} 接位`;
+      }
+      if (step.to) {
+        return `${prefix}原爪牙 ${step.to} 接位`;
+      }
+      if (step.from) {
+        return `${prefix}${step.from} 把印递了出去`;
+      }
+      return `${prefix}${step.label || "印章换了一只手"}`;
+    });
+    return parts.join("；");
   }
 
   function fallbackWinnerLabel() {
@@ -3018,9 +3402,9 @@ state.lastVotes = null;
   function revealRoleLabel(escaped = false) {
     const name = resolveRevealName();
     if (!name || name === "终局揭晓") {
-      return "凶手 · 待卷宗封存";
+      return "恶魔 · 待卷宗封存";
     }
-    return escaped ? "凶手 · 未被处决" : "凶手 · 已落网";
+    return escaped ? "恶魔 · 未被处决" : "恶魔 · 已落网";
   }
 
   function hashIndex(text, size) {
@@ -3038,9 +3422,13 @@ state.lastVotes = null;
       return;
     }
     holder.textContent = "";
-    const name = resolveRevealName();
-    const murderer = players().find((player) => player.name === name)
-      || (youRole() === "murderer" ? youPlayer() : null);
+    const info = resolveRevealInfo();
+    const target = info && info.final && info.final.name ? info.final : (info && info.demon);
+    const name = (target && target.name) || resolveRevealName();
+    const murderer = target && target.id
+      ? findPlayer(target.id)
+      : (players().find((player) => player.name === name)
+        || (youRole() === "murderer" ? youPlayer() : null));
     let figure = null;
     if (murderer) {
       const seat = [...document.querySelectorAll(".seat")]
@@ -3420,6 +3808,32 @@ state.lastVotes = null;
     return kept.join("") || raw;
   }
 
+  function renderEndReveal() {
+    const section = $("end-reveal");
+    if (!section) {
+      return;
+    }
+    const info = resolveRevealInfo() || {};
+    const minionName = info.minion && info.minion.name ? info.minion.name : "";
+    const poisonedName = info.poisoned && info.poisoned.name ? info.poisoned.name : "";
+    const chain = successionText(info);
+    $("end-minion").textContent = minionName
+      ? `${minionName}${chain ? " · 原爪牙" : ""}`
+      : "无";
+    $("end-poisoned").textContent = poisonedName
+      ? `${poisonedName} 被下药，信息有误`
+      : "无";
+    const chainEl = $("end-succession");
+    if (chainEl) {
+      chainEl.textContent = chain || "无";
+    }
+    const row = $("end-succession-row");
+    if (row) {
+      row.classList.toggle("hidden", !chain);
+    }
+    section.classList.toggle("hidden", !(minionName || poisonedName || chain));
+  }
+
   function renderEnd() {
     const overlay = $("end-overlay");
     if (!isFinished() || !state.endRevealed) {
@@ -3439,6 +3853,7 @@ state.lastVotes = null;
     $("end-murderer-role").textContent = revealRoleLabel(escaped);
     const role = youRole();
     $("end-you").textContent = `你 · ${ROLE_LABEL[role] || "身份未知"}`;
+    renderEndReveal();
     const youDead = Boolean(state.game && state.game.you_alive === false)
       || Boolean(state.voteResult && state.voteResult.executedId === youId())
       || Boolean(youPlayer() && youPlayer().alive === false);
@@ -3715,9 +4130,16 @@ state.lastVotes = null;
       const who = event
         ? (DRAWER_EVENT_META[entry.type] || "事件")
         : (isYou ? "你" : entry.speaker_name || "旁白");
+      const safeText = publicSafeText(entry.text, narration);
+      if (narration && isWhisperText(safeText)) {
+        item.classList.add("is-whisper");
+        if (isSelfWhisperText(safeText)) {
+          item.classList.add("is-whisper-self");
+        }
+      }
       item.append(
         node("p", "drawer-meta", `第 ${day} 天 · ${who}`),
-        node("p", "drawer-text", entry.text),
+        node("p", "drawer-text", safeText),
       );
       list.append(item);
     }
@@ -4541,12 +4963,14 @@ state.lastVotes = null;
     }
     state.stickForce = true;
 
-    const message = (result && result.message)
-      || (executedName
-        ? `${executedName} 被处决，天黑了。`
-        : (state.voteResult.tie
-          ? "平票，今晚无人被处决。"
-          : `最高 ${Math.max(0, ...tally.map((row) => row.count), 0)} 票，未达 ${threshold} 票门槛。`));
+    const message = (hasSuccessionFlag(result) && !(result && result.winner))
+      ? SUCCESSION_HINT
+      : ((result && result.message)
+        || (executedName
+          ? `${executedName} 被处决，天黑了。`
+          : (state.voteResult.tie
+            ? "平票，今晚无人被处决。"
+            : `最高 ${Math.max(0, ...tally.map((row) => row.count), 0)} 票，未达 ${threshold} 票门槛。`)));
     showReport(message, executedName ? "warn" : "info");
     pushLocalEvent({
       type: "vote",
@@ -5030,18 +5454,45 @@ state.lastVotes = null;
     const forcedVillager = [
       "you-die", "short", "short2", "execute", "execute3", "vote-you", "tie",
       "runoff", "runoff2", "inspect", "betray", "lastwords", "spectate",
+      "succession", "minion", "poison",
     ].includes(state.mockCase);
     const youMurderer = state.mockCase === "murderer"
       ? true
       : (forcedVillager ? false : Math.random() < 0.38);
+    const youMinion = state.mockCase === "minion";
     const isSpectate = state.mockCase === "spectate";
+    const allowMinion = state.mockCase === ""
+      || state.mockCase === "succession"
+      || state.mockCase === "minion"
+      || state.mockCase === "murderer";
     const murderer = youMurderer
       ? "p0"
       : (isSpectate ? "p5" : (state.mockCase ? "p5" : randomOf(MOCK_AGENTS).id));
     state.murdererId = murderer;
+    state.mockOriginalDemonId = murderer;
     state.murdererName = murderer === "p0"
       ? "你"
       : ((MOCK_AGENTS.find((agent) => agent.id === murderer) || {}).name || "未知");
+    let minionId = "";
+    if (allowMinion) {
+      if (youMinion) {
+        minionId = "p0";
+      } else if (state.mockCase === "succession") {
+        minionId = "p4";
+      } else {
+        const pool = MOCK_AGENTS.filter((agent) => agent.id !== murderer);
+        minionId = (randomOf(pool) || {}).id || "";
+      }
+    }
+    state.mockMinionId = minionId;
+    state.mockOriginalMinionId = minionId;
+    state.mockSuccession = [];
+    const goodPool = MOCK_AGENTS.filter((agent) => agent.id !== murderer && agent.id !== minionId);
+    state.mockPoisonedId = (state.mockCase === "succession" || state.mockCase === "poison")
+      ? "p2"
+      : (state.mockCase === "" && goodPool.length ? randomOf(goodPool).id : "");
+    state.mockWhisperDay = 1;
+    state.revealInfo = null;
     state.revealName = "";
     state.mockVotesCast = 0;
     state.mockLastVoteTie = false;
@@ -5076,16 +5527,26 @@ state.lastVotes = null;
       })),
     ];
 
+    const teammateName = (id) => (id === "p0"
+      ? "你"
+      : ((MOCK_AGENTS.find((agent) => agent.id === id) || {}).name || ""));
+    const role = youMurderer ? "murderer" : (youMinion ? "minion" : "villager");
+    const teammates = youMurderer && minionId
+      ? [teammateName(minionId)]
+      : (youMinion ? [teammateName(murderer)] : []);
     const you = {
       id: "p0",
       name: "你",
-      role: youMurderer ? "murderer" : "villager",
+      role,
       private_info: youMurderer
         ? ["你袖中藏着一把裁纸刀。今晚得让一个人再也开不了口。", "先让他们互相怀疑，别让目光落到你身上。"]
-        : ["你半夜听见走廊里有人试门把手，却没看清那张脸。", "你不是凶手。可在这张桌上，清白也需要证据。"],
-      teammates: [],
+        : (youMinion
+          ? ["你不是恶魔，可你知道刀在谁手里。", "替那个人把话圆过去，别让人顺着线摸到你。"]
+          : ["你半夜听见走廊里有人试门把手，却没看清那张脸。", "你不是凶手。可在这张桌上，清白也需要证据。"]),
+      teammates,
     };
 
+    const whisperPair = MOCK_AGENTS.slice(0, 2);
     const log = [{
       seq: 1,
       speaker_id: "__narration",
@@ -5101,6 +5562,13 @@ state.lastVotes = null;
         text: MOCK_OPENERS[agent.id],
         day: 1,
       });
+    });
+    log.push({
+      seq: log.length + 1,
+      speaker_id: "__narration",
+      speaker_name: "旁白",
+      text: `${whisperPair[0].name} 和 ${whisperPair[1].name} 在廊下低声说了几句。`,
+      day: 1,
     });
 
     const game = {
@@ -5119,6 +5587,54 @@ state.lastVotes = null;
 
   function mockAlive() {
     return players().filter((player) => player.alive !== false);
+  }
+
+  function mockEvilIds() {
+    const ids = [state.murdererId];
+    if (state.mockMinionId) {
+      ids.push(state.mockMinionId);
+    }
+    return ids.filter(Boolean);
+  }
+
+  function mockPromoteMinion(day) {
+    const minion = findPlayer(state.mockMinionId);
+    if (!minion || minion.alive === false) {
+      return false;
+    }
+    const demon = findPlayer(state.murdererId);
+    const step = {
+      from_id: state.murdererId,
+      from_name: demon ? demon.name : state.murdererName,
+      to_id: minion.id,
+      to_name: minion.name,
+      day: Number(day) || (state.game ? state.game.day : 1),
+    };
+    state.mockSuccession.push(step);
+    state.murdererId = minion.id;
+    state.murdererName = minion.name;
+    state.mockMinionId = "";
+    return true;
+  }
+
+  function mockMaybeWhisper() {
+    if (!state.game || state.mockWhisperDay === state.game.day) {
+      return;
+    }
+    const agents = mockAlive().filter((player) => !player.is_you);
+    if (agents.length < 2) {
+      return;
+    }
+    const pair = shuffle(agents).slice(0, 2);
+    const log = state.game.public_log;
+    log.push({
+      seq: nextSeq(log),
+      speaker_id: "__narration",
+      speaker_name: "旁白",
+      text: `${pair[0].name} 和 ${pair[1].name} 在廊下低声说了几句。`,
+      day: state.game.day,
+    });
+    state.mockWhisperDay = state.game.day;
   }
 
   function mockLine(agent) {
@@ -5144,6 +5660,7 @@ state.lastVotes = null;
 
   function mockDiscuss() {
     const log = state.game.public_log;
+    mockMaybeWhisper();
     const speakers = shuffle(mockAlive().filter((player) => !player.is_you)).slice(0, 3);
     const replies = speakers.map((agent) => ({
       seq: nextSeq(log),
@@ -5243,6 +5760,7 @@ state.lastVotes = null;
   }
 
   function mockNominate(targetId) {
+    mockMaybeWhisper();
     const target = findPlayer(targetId);
     if (!target || target.alive === false) {
       throw new Error("那不在桌上了。");
@@ -5284,7 +5802,8 @@ state.lastVotes = null;
     const agents = alive.filter((player) => !player.is_you);
     const mode = state.mockCase;
     const firstRound = state.mockVotesCast === 0;
-    const executeAll = mode === "execute" && firstRound;
+    const executeAll = (mode === "execute" && firstRound)
+      || (mode === "succession" && (firstRound || state.mockVotesCast === 1));
     const executeThree = mode === "execute3" && firstRound;
     const voteYouOut = mode === "vote-you" && firstRound;
     const shortVote = (mode === "short" || mode === "short2" || mode === "you-die") && firstRound;
@@ -5375,15 +5894,31 @@ state.lastVotes = null;
     }
     state.mockVotesCast += 1;
 
-    const murderer = findPlayer(state.murdererId);
+    const demonBefore = state.murdererId;
     let winner = null;
-    if (executedId === state.murdererId) {
-      winner = "villagers";
-    } else if (executedId === youId()) {
-      winner = mockAlive().length <= 2 ? "murderer" : null;
-    } else if (murderer && murderer.alive === false) {
+    let succeeded = false;
+    if (executedId && executedId === demonBefore) {
+      const minion = findPlayer(state.mockMinionId);
+      if (minion && minion.alive !== false && minion.id !== executedId) {
+        succeeded = mockPromoteMinion(state.game.day);
+      } else {
+        winner = "villagers";
+      }
+    } else if (executedId && executedId === state.mockMinionId) {
+      state.mockMinionId = "";
+    }
+    const murderer = findPlayer(state.murdererId);
+    if (!winner && murderer && murderer.alive === false) {
+      if (state.mockMinionId && mockPromoteMinion(state.game.day)) {
+        succeeded = true;
+      } else {
+        winner = "villagers";
+      }
+    }
+    if (!winner && murderer && murderer.alive !== false && mockAlive().length <= 2) {
       winner = "murderer";
-    } else if (mockAlive().length <= 2 && murderer && murderer.alive !== false) {
+    }
+    if (!winner && state.game.day > 8) {
       winner = "murderer";
     }
 
@@ -5419,11 +5954,13 @@ state.lastVotes = null;
       });
     }
 
-    const message = executedId
-      ? `${executedName} 被投票处决，天黑了。`
-      : (tied
-        ? "平票，今晚无人被处决，僵局一直拖到天亮。"
-        : `最高 ${topCount} 票，未达 ${threshold} 票门槛。`);
+    const message = (succeeded && !winner)
+      ? SUCCESSION_HINT
+      : (executedId
+        ? `${executedName} 被投票处决，天黑了。`
+        : (tied
+          ? "平票，今晚无人被处决，僵局一直拖到天亮。"
+          : `最高 ${topCount} 票，未达 ${threshold} 票门槛。`));
     const runoffRival = others[0] || target;
     if (spectateTie) {
       const nightLog = state.game.public_log;
@@ -5490,6 +6027,7 @@ state.lastVotes = null;
       executed: executedId ? { id: executedId, name: executedName } : null,
       tie: !executedId && tied,
       winner,
+      succession: succeeded ? state.mockSuccession.slice() : null,
       reveal: winner ? mockReveal() : null,
       message,
       public_log: log.slice(),
@@ -5507,9 +6045,21 @@ state.lastVotes = null;
   }
 
   function mockReveal() {
+    const originalId = state.mockOriginalDemonId || state.murdererId;
+    const original = findPlayer(originalId);
+    const current = findPlayer(state.murdererId);
+    const minion = findPlayer(state.mockOriginalMinionId);
+    const poisoned = findPlayer(state.mockPoisonedId);
     return {
-      murderer_id: state.murdererId,
-      murderer_name: state.murdererName,
+      murderer_id: originalId,
+      murderer_name: original ? original.name : state.murdererName,
+      final_murderer_id: state.murdererId,
+      final_murderer_name: current ? current.name : state.murdererName,
+      minion_id: state.mockOriginalMinionId,
+      minion_name: minion ? minion.name : "",
+      succession: state.mockSuccession.slice(),
+      poisoned_id: state.mockPoisonedId,
+      poisoned_name: poisoned ? poisoned.name : "",
     };
   }
 
@@ -5583,6 +6133,7 @@ state.lastVotes = null;
     const agents = alive.filter((player) => !player.is_you);
     const day = (state.game.day || 1) + 1;
     state.game.day = day;
+    mockMaybeWhisper();
     state.mockSpectateStep += 1;
     const step = state.mockSpectateStep;
 
@@ -5676,7 +6227,8 @@ state.lastVotes = null;
   function mockNight(targetId) {
     const youMurderer = state.murdererId === "p0";
     const forceYouDie = state.mockCase === "you-die" || state.mockCase === "spectate";
-    const forceAgentDie = (state.mockCase === "short" || state.mockCase === "short2") && !youMurderer;
+    const forceAgentDie = (state.mockCase === "short" || state.mockCase === "short2"
+      || state.mockCase === "succession") && !youMurderer;
     let killedId = "";
     let killedName = "";
     const murderer = findPlayer(state.murdererId);
@@ -5687,10 +6239,14 @@ state.lastVotes = null;
         if (!target || target.alive === false || target.is_you) {
           throw new Error("请选择一名在场的目标。");
         }
+        if (target.id === state.mockMinionId) {
+          throw new Error("那是替你守秘密的人。");
+        }
         killedId = target.id;
         killedName = target.name;
       } else {
-        const pool = mockAlive().filter((player) => player.id !== state.murdererId);
+        const evil = mockEvilIds();
+        const pool = mockAlive().filter((player) => !evil.includes(player.id));
         const youTicket = pool.find((player) => player.is_you);
         const agentPool = pool.filter((player) => !player.is_you);
         let victim = null;
@@ -5708,7 +6264,8 @@ state.lastVotes = null;
       }
     }
     if (!killedId && murderer && murderer.alive !== false) {
-      const victim = randomOf(mockAlive().filter((player) => player.id !== state.murdererId));
+      const evil = mockEvilIds();
+      const victim = randomOf(mockAlive().filter((player) => !evil.includes(player.id)));
       if (victim) {
         killedId = victim.id;
         killedName = victim.name;
@@ -5735,12 +6292,22 @@ state.lastVotes = null;
       }
     }
 
-    const murdererAfter = findPlayer(state.murdererId);
+    let murdererAfter = findPlayer(state.murdererId);
     const aliveAfter = mockAlive().length;
     let winner = null;
+    let succeededNight = false;
     if (murdererAfter && murdererAfter.alive === false) {
-      winner = "villagers";
-    } else if (aliveAfter <= 2) {
+      if (state.mockMinionId && mockPromoteMinion(state.game.day)) {
+        succeededNight = true;
+        murdererAfter = findPlayer(state.murdererId);
+      } else {
+        winner = "villagers";
+      }
+    }
+    if (!winner && murdererAfter && murdererAfter.alive !== false && aliveAfter <= 2) {
+      winner = "murderer";
+    }
+    if (!winner && state.game.day > 8) {
       winner = "murderer";
     }
     const spectating = !winner && killedId === youId();
@@ -5760,6 +6327,9 @@ state.lastVotes = null;
       day: night,
     });
     state.game.day = day;
+    if (!winner) {
+      mockMaybeWhisper();
+    }
     state.mockLastVoteTie = false;
     if (spectating) {
       state.ghostVoteAvailable = state.ghostVoteUsed ? false : true;
@@ -5770,6 +6340,7 @@ state.lastVotes = null;
       day,
       phase,
       winner,
+      succession: succeededNight ? state.mockSuccession.slice() : null,
       reveal: winner ? mockReveal() : null,
       message,
       public_log: log.slice(),

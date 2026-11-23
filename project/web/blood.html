@@ -38,8 +38,9 @@
         </div>
         <div id="identity-card" class="identity-card" data-role="villager">
           <span class="identity-label">你的身份</span>
-          <span id="identity-role" class="identity-role">村民</span>
+          <span id="identity-role" class="identity-role">镇民</span>
           <span id="identity-detail" class="identity-detail">你手上没有刀。</span>
+          <span id="identity-mate" class="identity-mate hidden"></span>
         </div>
       </div>
       <div class="blood-actions">
@@ -241,22 +242,39 @@
       </section>
       <dl class="end-facts">
         <div>
-          <dt>凶手</dt>
+          <dt>恶魔</dt>
           <dd id="end-murderer">终局揭晓</dd>
         </div>
         <div>
-          <dt>身份</dt>
-          <dd id="end-murderer-role">凶手</dd>
+          <dt>结局</dt>
+          <dd id="end-murderer-role">恶魔 · 待揭晓</dd>
         </div>
         <div>
           <dt>你的身份</dt>
-          <dd id="end-you">村民</dd>
+          <dd id="end-you">镇民</dd>
         </div>
         <div>
           <dt>撑过</dt>
           <dd id="end-days">1 天</dd>
         </div>
       </dl>
+      <section id="end-reveal" class="end-reveal hidden" aria-label="阵营真相">
+        <p class="end-reveal-title">TRUE NAMES · 桌上没说完的</p>
+        <dl class="end-reveal-list">
+          <div>
+            <dt>爪牙</dt>
+            <dd id="end-minion">无</dd>
+          </div>
+          <div id="end-succession-row" class="succession-row">
+            <dt>传位</dt>
+            <dd id="end-succession">无</dd>
+          </div>
+          <div>
+            <dt>毒醉</dt>
+            <dd id="end-poisoned">无</dd>
+          </div>
+        </dl>
+      </section>
       <p id="end-fatal" class="end-fatal hidden"></p>
       <p id="end-last-words" class="end-last-words hidden"></p>
       <form id="end-last-words-form" class="end-last-words-form hidden" autocomplete="off">
