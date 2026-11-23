@@ -5083,4 +5083,10 @@ button:disabled {
     font-size: 10px;
     padding: 2px 8px;
   }
+
+  .seat.selectable[data-hint]::before,
+  .seat[data-hint]::before {
+    display: none !important;
+    content: none !important;
+  }
 }

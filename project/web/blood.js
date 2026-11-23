@@ -1472,7 +1472,11 @@ state.revealInfo = info;
         `${displayName(player)}，${player.alive === false ? "已出局" : "在场"}${player.is_you ? "，你" : ""}${selected ? "，已选中" : ""}`,
       );
       if (selectable && phase === "discussion") {
-        seat.dataset.hint = "点名";
+        if (window.innerWidth > 430) {
+          seat.dataset.hint = "点名";
+        } else {
+          delete seat.dataset.hint;
+        }
       } else if (selectable && phase === "nomination") {
         seat.dataset.hint = "可提名";
       } else if (selectable && phase === "night") {
