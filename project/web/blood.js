@@ -11,6 +11,7 @@
     defense: "自辩质证",
     runoff: "平票加赛",
     night: "夜晚",
+    spectating: "廊下观战",
     ended: "结束",
   };
 
@@ -27,10 +28,15 @@
     murderer: "凶手胜",
     murderers: "凶手胜",
     killer: "凶手胜",
+    evil: "凶手胜",
+    escape: "凶手胜",
+    escaped: "凶手胜",
     "好人": "好人胜",
     "好人阵营": "好人胜",
     "凶手": "凶手胜",
     "杀手": "凶手胜",
+    "凶手逃脱": "凶手胜",
+    "逃脱": "凶手胜",
   };
 
   const CONFIDE_PER_DAY = 1;
@@ -110,6 +116,19 @@
 
     endPending: false,
     endRevealed: false,
+    inspectReveal: false,
+    inspectRevealed: false,
+    ghostVoteAvailable: null,
+    ghostVoteUsed: false,
+    ghostTargetId: null,
+    ghostVotes: [],
+    ghostDismissed: false,
+    advancing: false,
+    lastKilledName: "",
+    thresholdReduced: false,
+    mockSpectateStep: 0,
+    mockSpectateVotes: [],
+    mockGhostVote: null,
   };
 
   function node(tag, className, text) {
@@ -199,6 +218,9 @@
     if (["night", "夜晚", "夜间"].includes(raw)) {
       return "night";
     }
+    if (["spectating", "spectate", "ghost", "observer", "观战", "旁观", "廊下观战"].includes(raw)) {
+      return "spectating";
+    }
     if (["ended", "end", "over", "finished", "结束", "终局"].includes(raw)) {
       return "ended";
     }
@@ -207,6 +229,9 @@
     }
     if (raw.includes("night") || raw.includes("夜")) {
       return "night";
+    }
+    if (raw.includes("spectat") || raw.includes("观战") || raw.includes("旁观")) {
+      return "spectating";
     }
     if (raw.includes("defen") || raw.includes("自辩") || raw.includes("质证") || raw.includes("辩护")) {
       return "defense";
@@ -431,6 +456,9 @@
     if (state.game.winner) {
       return "ended";
     }
+    if (state.game.you_alive === false) {
+      return "spectating";
+    }
     if (state.nominationMode && state.game.phase === "discussion") {
       return "nomination";
     }
@@ -524,6 +552,19 @@ state.lastVotes = null;
       state.userScrolled = false;
       state.ignoreScroll = false;
       state.stickForce = false;
+      state.inspectReveal = false;
+      state.inspectRevealed = false;
+      state.ghostVoteAvailable = null;
+      state.ghostVoteUsed = false;
+      state.ghostTargetId = null;
+      state.ghostVotes = [];
+      state.ghostDismissed = false;
+      state.advancing = false;
+      state.lastKilledName = "";
+      state.thresholdReduced = false;
+      state.mockSpectateStep = 0;
+      state.mockSpectateVotes = [];
+      state.mockGhostVote = null;
 
       state.drawerTab = "public";
       clearBubble();
@@ -591,6 +632,18 @@ state.lastVotes = null;
       : data.stalemateCount;
     if (stalemateRaw !== undefined && stalemateRaw !== null) {
       state.runoffStalemate = Math.max(0, Number(stalemateRaw) || 0);
+    }
+    if (data.threshold_reduced !== undefined || data.thresholdReduced !== undefined) {
+      state.thresholdReduced = Boolean(
+        data.threshold_reduced !== undefined ? data.threshold_reduced : data.thresholdReduced,
+      );
+    }
+    if (data.ghost_vote_available !== undefined) {
+      state.ghostVoteAvailable = Boolean(data.ghost_vote_available);
+    } else if (data.ghostVoteAvailable !== undefined) {
+      state.ghostVoteAvailable = Boolean(data.ghostVoteAvailable);
+    } else if (options.reset) {
+      state.ghostVoteAvailable = null;
     }
     ensureYouPlayer();
     applyDeadFlags();
@@ -836,6 +889,8 @@ state.lastVotes = null;
     appendLogEntries();
     renderDefense();
     renderVoteBoard();
+    renderSpectate();
+    renderGhostVote();
     renderConfide();
     renderInspect();
     renderBallot();
@@ -894,6 +949,7 @@ state.lastVotes = null;
     phaseEl.textContent = PHASE_LABEL[phase] || "白天讨论";
     phaseEl.dataset.phase = phase;
     document.body.dataset.phase = phase;
+    document.body.dataset.spectating = (!isFinished() && !youAlive() && Boolean(state.game)) ? "1" : "0";
     $("table-day").textContent = `第 ${day} 夜`;
   }
 
@@ -1266,7 +1322,7 @@ state.lastVotes = null;
     if (!state.game || !state.voteResult) {
       return false;
     }
-    if (currentPhase() === "night" && !state.voteHeld) {
+    if (currentPhase() === "night" && !state.voteHeld && youAlive()) {
       return false;
     }
     return true;
@@ -1337,6 +1393,14 @@ state.lastVotes = null;
     exec.append(node("span", "exec-text", execText));
     board.append(exec);
 
+    const reduced = Boolean(state.thresholdReduced)
+      || Boolean(result.thresholdReduced)
+      || state.runoffStalemate >= 2;
+    if (threshold && reduced && !executedName) {
+      board.append(node("p", "vote-stalemate-note",
+        `僵局持续，门槛降为 ${threshold} 票。`));
+    }
+
     if (votes.length) {
       const groups = node("div", "vote-rows");
       let rowIndex = 0;
@@ -1367,6 +1431,297 @@ state.lastVotes = null;
 
 
     board.classList.remove("hidden");
+  }
+
+  function setVoteView(result) {
+    if (!result || typeof result !== "object") {
+      return null;
+    }
+    const votes = normalizeVotes(result.votes);
+    let tally = normalizeTally(result.tally);
+    if (!tally.length) {
+      tally = tallyFromVotes(votes);
+    }
+    const executedId = idOf(result.executed);
+    const executedName = nameOf(result.executed)
+      || (executedId ? playerName(executedId) : "");
+    const executedPlayer = executedId
+      ? (findPlayer(executedId) || players().find((player) => player.name === executedName || player.name === executedId))
+      : null;
+    const executedActualId = executedPlayer ? executedPlayer.id : executedId;
+    if (!votes.length && !tally.length && !executedActualId) {
+      return null;
+    }
+    const aliveCount = players().filter((player) => player.alive !== false).length;
+    const threshold = Number(result.threshold) || (Math.floor(aliveCount / 2) + 1);
+    const message = String(result.message || "");
+    state.voteResult = {
+      votes,
+      tally,
+      threshold,
+      executedId: executedActualId,
+      executedName,
+      day: Number(result.day) || (state.game ? state.game.day : 1),
+      message,
+      tie: Boolean(result.tie || result.tied) || /平票|僵局/u.test(message),
+      thresholdReduced: Boolean(result.threshold_reduced || result.thresholdReduced),
+    };
+    state.lastVotes = state.voteResult;
+    state.lastVoteResult = state.voteResult;
+    if (Number(result.stalemate_count || result.stalemateCount || 0) >= 2 || state.voteResult.thresholdReduced) {
+      state.thresholdReduced = true;
+    }
+    if (executedActualId) {
+      markDead(executedActualId);
+    }
+    return state.voteResult;
+  }
+
+  function spectateVisible() {
+    return Boolean(state.game) && !isFinished() && !youAlive();
+  }
+
+  function ghostTargets() {
+    return players().filter((player) => player.alive !== false && !player.is_you);
+  }
+
+  function ghostVoteOpen() {
+    if (!spectateVisible() || state.ghostVoteUsed || state.ghostDismissed) {
+      return false;
+    }
+    if (state.ghostVoteAvailable === false) {
+      return false;
+    }
+    const phase = normalizePhase(state.game && state.game.phase);
+    const inVotePhase = state.ghostVoteAvailable === true
+      || phase === "nomination"
+      || phase === "defense"
+      || phase === "runoff"
+      || Boolean(state.voteResult);
+    return inVotePhase && ghostTargets().length > 0;
+  }
+
+  function renderSpectate() {
+    const panel = $("spectate-panel");
+    if (!panel) {
+      return;
+    }
+    const visible = spectateVisible();
+    const discussion = panel.closest(".discussion");
+    if (discussion) {
+      discussion.classList.toggle("spectating", visible);
+    }
+    panel.classList.toggle("hidden", !visible);
+    if (!visible) {
+      return;
+    }
+    $("spectate-day").textContent = `第 ${state.game.day} 天`;
+    const line = $("spectate-line");
+    if (state.ghostVoteUsed) {
+      line.textContent = "你已出局。亡者票已经用过，现在只剩看。";
+    } else if (ghostVoteOpen()) {
+      line.textContent = "你已出局。桌上要落票了——你还能投最后一票。";
+    } else {
+      line.textContent = "你已出局，观战中。退到廊下，看他们怎么收场。";
+    }
+    const note = $("spectate-note");
+    const pieces = [];
+    if (state.lastKilledName) {
+      pieces.push(`最近死讯：${state.lastKilledName}`);
+    }
+    if (state.voteResult && !state.voteResult.executedName && state.voteResult.tie) {
+      pieces.push("票数咬死，今晚无人被处决");
+    }
+    if (state.voteResult && state.voteResult.executedName) {
+      pieces.push(`处决：${state.voteResult.executedName}`);
+    }
+    note.textContent = pieces.join(" · ");
+    note.classList.toggle("hidden", !pieces.length);
+    const advance = $("spectate-advance");
+    if (advance) {
+      advance.disabled = state.busy || state.advancing;
+      advance.textContent = state.advancing ? "推着这一夜…" : "继续观战";
+    }
+    const log = $("spectate-log");
+    if (log) {
+      log.disabled = state.busy;
+    }
+  }
+
+  function renderGhostVote() {
+    const panel = $("ghost-vote-panel");
+    if (!panel) {
+      return;
+    }
+    const open = ghostVoteOpen();
+    const visible = spectateVisible() && (open || state.ghostVoteUsed) && !state.ghostDismissed;
+    panel.classList.toggle("hidden", !visible);
+    if (!visible) {
+      return;
+    }
+    panel.classList.toggle("is-used", state.ghostVoteUsed);
+    $("ghost-note").textContent = state.ghostVoteUsed ? "已落，不可再投" : "仅此一次";
+    $("ghost-lede").textContent = state.ghostVoteUsed
+      ? "这张纸条已经压在票板底下了。"
+      : "你已不在桌上，可这一票还压在袖子里。";
+    const targets = $("ghost-targets");
+    const candidates = ghostTargets();
+    if (!candidates.some((player) => player.id === state.ghostTargetId)) {
+      state.ghostTargetId = candidates[0] ? candidates[0].id : null;
+    }
+    const signature = candidates
+      .map((player) => `${player.id}:${player.id === state.ghostTargetId ? 1 : 0}`)
+      .join("|");
+    if (targets.dataset.sig !== signature) {
+      targets.textContent = "";
+      for (const player of candidates) {
+        const chip = node("button", "ghost-target");
+        chip.type = "button";
+        chip.dataset.targetId = player.id;
+        chip.disabled = state.ghostVoteUsed;
+        chip.setAttribute("aria-pressed", player.id === state.ghostTargetId ? "true" : "false");
+        chip.append(node("span", "ghost-target-name", displayName(player)));
+        chip.addEventListener("click", () => {
+          if (state.busy || state.ghostVoteUsed) {
+            return;
+          }
+          state.ghostTargetId = player.id;
+          targets.dataset.sig = "";
+          renderGhostVote();
+        });
+        targets.append(chip);
+      }
+      targets.dataset.sig = signature;
+    }
+    const confirm = $("ghost-confirm");
+    const hold = $("ghost-hold");
+    if (confirm) {
+      confirm.disabled = state.busy || state.ghostVoteUsed || !state.ghostTargetId;
+      confirm.textContent = state.ghostVoteUsed ? "亡者票已用" : "投出你的一票";
+    }
+    if (hold) {
+      hold.disabled = state.busy || state.ghostVoteUsed;
+    }
+    const stamp = $("ghost-stamp");
+    if (stamp) {
+      stamp.classList.toggle("hidden", !state.ghostVoteUsed);
+    }
+  }
+
+  function applyAdvance(data, options = {}) {
+    if (!data || typeof data !== "object") {
+      return;
+    }
+    applyGame(data);
+    const view = setVoteView(data);
+    const killedId = idOf(data.killed);
+    const killedName = nameOf(data.killed) || (killedId ? playerName(killedId) : "");
+    if (killedId) {
+      markDead(killedId);
+      state.lastKilledName = killedName || "一个人";
+    }
+    if (data.executed) {
+      const executedId = idOf(data.executed) || (state.voteResult && state.voteResult.executedId);
+      markDead(executedId);
+    }
+    if (data.ghost_vote_available !== undefined) {
+      state.ghostVoteAvailable = Boolean(data.ghost_vote_available);
+    }
+    if (data.ghost_vote_used !== undefined) {
+      state.ghostVoteUsed = Boolean(data.ghost_vote_used);
+    }
+    if (data.winner) {
+      state.endPending = true;
+      state.endRevealed = false;
+      state.ghostVoteAvailable = false;
+    }
+    state.ghostDismissed = false;
+    state.selectedId = null;
+    state.nominationMode = false;
+    state.voteHeld = false;
+    state.stickForce = true;
+    const message = String(data.message || "");
+    if (message) {
+      showReport(message, data.winner ? "good" : (killedName ? "warn" : "info"));
+    } else if (killedName) {
+      showReport(killedName === "你" ? "天亮时，你没能再站起来。" : `天亮时，${killedName} 没有下楼。`, "warn");
+    } else if (view && view.executedName) {
+      showReport(`处决 · ${view.executedName} 被投票处决。`, "warn");
+    } else if (view && view.tie) {
+      showReport("票数咬死，今晚无人被处决。", "info");
+    }
+    if (options.ghost) {
+      showToast("亡者票落下了。", "warn", 3800);
+    }
+  }
+
+  async function doAdvance() {
+    if (!state.game || state.busy) {
+      return;
+    }
+    state.advancing = true;
+    renderSpectate();
+    try {
+      await runAction(async () => {
+        let result;
+        if (state.mock) {
+          result = mockAdvance();
+        } else {
+          try {
+            result = await apiRequest(`${API}/games/${state.gameId}/advance`, {
+              method: "POST",
+              body: {},
+            });
+          } catch (error) {
+            if (error && (error.status === 404 || error.status === 405 || error.status === 501)) {
+              result = mockAdvance();
+              showToast("推进接口还没就绪，先用本地推演接住这一夜。", "warn", 4200);
+            } else {
+              throw error;
+            }
+          }
+        }
+        applyAdvance(result || {});
+        if (!state.mock) {
+          await refreshReal();
+        }
+        render();
+      });
+    } finally {
+      state.advancing = false;
+      renderSpectate();
+    }
+  }
+
+  async function doGhostVote() {
+    const target = findPlayer(state.ghostTargetId);
+    if (!target || target.alive === false || target.is_you) {
+      showToast("先选一个还坐在桌边的人。", "warn");
+      return;
+    }
+    if (!ghostVoteOpen()) {
+      showToast("现在不是投亡者票的时候。", "warn");
+      return;
+    }
+    runAction(async () => {
+      let result;
+      if (state.mock) {
+        result = mockGhostVote(target.id);
+      } else {
+        result = await apiRequest(`${API}/games/${state.gameId}/vote`, {
+          method: "POST",
+          body: { target_id: target.id, ghost: true },
+        });
+      }
+      state.ghostVoteUsed = true;
+      state.ghostVoteAvailable = false;
+      state.ghostVotes.push({ targetId: target.id, targetName: displayName(target) });
+      applyAdvance(result || {}, { ghost: true });
+      if (!state.mock) {
+        await refreshReal();
+      }
+      render();
+    });
   }
 
   function buildVoteRow(vote, index) {
@@ -1784,8 +2139,10 @@ state.lastVotes = null;
     $("inspect-lede").textContent = isMurderer
       ? "你没有查验。只有好人手里才有这一项。"
       : (hasResult
-        ? "牌已经掀开。桌上的人都知道你查过谁了。"
-        : "只掀一个人的底牌。查完，桌上都会知道你查过谁。");
+        ? (state.inspectResult.revealed
+          ? "牌已经翻在桌上，所有人都看见了你查的是谁。"
+          : "牌只翻给你一个人看。桌上没人知道你查出了什么。")
+        : "只掀一个人的底牌。牌在你手里，公不公开由你决定。");
 
     const targets = $("inspect-targets");
     const candidates = inspectCandidates();
@@ -1821,13 +2178,45 @@ state.lastVotes = null;
     if (confirm) {
       confirm.classList.toggle("hidden", hasResult || isMurderer || state.inspectUsed);
       confirm.disabled = state.busy || !state.inspectTargetId || state.inspectUsed;
-      confirm.textContent = state.busy ? "查验中…" : "确认查验";
+      const picked = findPlayer(state.inspectTargetId);
+      const pickedName = picked ? displayName(picked) : "那个人";
+      confirm.textContent = state.busy
+        ? "查验中…"
+        : (state.inspectReveal ? `公开我查过 ${pickedName}` : "悄悄看牌");
+    }
+    const choice = $("inspect-choice");
+    if (choice) {
+      const showChoice = !hasResult && !isMurderer && !state.inspectUsed;
+      choice.classList.toggle("hidden", !showChoice);
+      if (showChoice) {
+        const picked = findPlayer(state.inspectTargetId);
+        const pickedName = picked ? displayName(picked) : "那个人";
+        $("inspect-choice-lede").textContent = state.inspectReveal
+          ? `公开就意味着：桌上都会知道你查过 ${pickedName}。`
+          : "这张牌，给桌上的人看吗？默认只自己看。";
+        const privateBtn = $("inspect-private");
+        const publicBtn = $("inspect-public");
+        privateBtn.classList.toggle("is-picked", !state.inspectReveal);
+        publicBtn.classList.toggle("is-picked", state.inspectReveal);
+        privateBtn.setAttribute("aria-pressed", state.inspectReveal ? "false" : "true");
+        publicBtn.setAttribute("aria-pressed", state.inspectReveal ? "true" : "false");
+        privateBtn.disabled = state.busy;
+        publicBtn.disabled = state.busy;
+        publicBtn.textContent = `公开我查过 ${pickedName}`;
+      }
     }
     const box = $("inspect-result");
     if (hasResult) {
       $("inspect-verdict").textContent = state.inspectResult.verdict;
       $("inspect-verdict").dataset.result = state.inspectResult.murderer ? "murderer" : "clear";
-      $("inspect-public").textContent = state.inspectResult.publicLine;
+      $("inspect-visibility").textContent = state.inspectResult.revealed
+        ? `已公开 · 桌上都知道了${state.inspectResult.publicLine ? "" : ""}`
+        : "仅你可见 · 这句话没有上桌";
+      $("inspect-visibility").dataset.visible = state.inspectResult.revealed ? "public" : "private";
+      $("inspect-public").textContent = state.inspectResult.revealed
+        ? state.inspectResult.publicLine
+        : "";
+      $("inspect-public").classList.toggle("hidden", !state.inspectResult.revealed);
       box.classList.remove("hidden");
     } else {
       box.classList.add("hidden");
@@ -1865,6 +2254,8 @@ state.lastVotes = null;
     }
     state.inspectOpen = true;
     state.inspectResult = null;
+    state.inspectReveal = false;
+    state.inspectRevealed = false;
     state.confideOpen = false;
     state.confideReply = null;
     render();
@@ -1873,6 +2264,7 @@ state.lastVotes = null;
   function closeInspect() {
     state.inspectOpen = false;
     state.inspectResult = null;
+    state.inspectReveal = false;
     render();
   }
 
@@ -1889,15 +2281,16 @@ state.lastVotes = null;
       showToast("这一局的查验已经用过了。", "warn");
       return;
     }
+    const reveal = Boolean(state.inspectReveal);
     runAction(async () => {
       let result;
       if (state.mock) {
-        result = mockInspect(target.id);
+        result = mockInspect(target.id, reveal);
       } else {
         try {
           result = await apiRequest(`${API}/games/${state.gameId}/inspect`, {
             method: "POST",
-            body: { target_id: target.id },
+            body: { target_id: target.id, reveal },
           });
         } catch (error) {
           if (error && (error.status === 404 || error.status === 405 || error.status === 501)) {
@@ -1910,32 +2303,39 @@ state.lastVotes = null;
           throw error;
         }
       }
-      applyInspectResult(target, result || {});
+      applyInspectResult(target, result || {}, reveal);
       state.inspectUsed = true;
-      if (state.mock) {
+      const revealed = Boolean(state.inspectResult && state.inspectResult.revealed);
+      if (state.mock && revealed) {
         addInspectLine(target.name, state.inspectResult.publicLine);
       }
       pushLocalEvent({
         type: "inspect",
         day: state.game ? state.game.day : 1,
-        text: `查验 · ${target.name} · ${state.inspectResult.murderer ? "凶手" : "不是凶手"}`,
+        text: `查验 · ${target.name} · ${state.inspectResult.murderer ? "凶手" : "不是凶手"}`
+          + (revealed ? " · 已公开" : " · 未公开"),
         target: { id: target.id, name: target.name },
         result: state.inspectResult.murderer ? "murderer" : "not_murderer",
-        public_line: state.inspectResult.publicLine,
+        public_line: revealed ? state.inspectResult.publicLine : "",
       });
       if (!state.mock) {
         await refreshReal();
-        ensureInspectLine(target.name, state.inspectResult.publicLine);
+        if (revealed) {
+          ensureInspectLine(target.name, state.inspectResult.publicLine);
+        }
       }
       render();
     });
   }
 
-  function applyInspectResult(target, result) {
+  function applyInspectResult(target, result, reveal = false) {
     const raw = String(result.result || result.verdict || "").toLowerCase();
     const murderer = raw === "murderer" || raw === "凶手";
     const verdict = murderer ? "查验结果：凶手" : "查验结果：不是凶手";
-    const publicLine = String(result.public_line || result.publicLine || `我查过${target.name}。`);
+    const revealed = Boolean(result.revealed !== undefined ? result.revealed : reveal);
+    const publicLine = revealed
+      ? String(result.public_line || result.publicLine || `我查过${target.name}。`)
+      : "";
     const remaining = Number(result.remaining);
     state.inspectResult = {
       targetId: target.id,
@@ -1943,8 +2343,13 @@ state.lastVotes = null;
       murderer,
       verdict,
       publicLine,
+      revealed,
       remaining: Number.isFinite(remaining) ? remaining : 0,
     };
+    state.inspectRevealed = revealed;
+    if (Number.isFinite(remaining)) {
+      state.inspectUsed = remaining <= 0;
+    }
     return state.inspectResult;
   }
 
@@ -2324,6 +2729,12 @@ state.lastVotes = null;
         : "本局已结束。";
     }
     if (!youAlive()) {
+      if (ghostVoteOpen()) {
+        return "你已出局，但桌上正在落票——亡者票只有一次，投完就只剩看。";
+      }
+      if (state.ghostVoteUsed) {
+        return "你已出局，亡者票已经用过。点「继续观战」把这一夜看完。";
+      }
       if (lastWordsEligible() && state.lastWordsAvailable !== false) {
         return "你已出局。先留一句遗言，再点「继续观战」让他们走完这一夜。";
       }
@@ -2406,7 +2817,7 @@ state.lastVotes = null;
     }
     secondary.textContent = secondaryText || "结束讨论，提名";
     secondary.classList.toggle("hidden", !secondaryVisible);
-    secondary.disabled = state.busy;
+    secondary.disabled = state.busy || state.advancing;
 
     const confide = $("confide-button");
     const confideVisible = Boolean(state.game) && !finished && alive
@@ -2496,7 +2907,9 @@ state.lastVotes = null;
     } else if (phase === "ended") {
       hallHint.textContent = "牌翻过来了。";
     } else if (!alive) {
-      hallHint.textContent = "你已出局，观战中。他们还在桌边争论。";
+      hallHint.textContent = ghostVoteOpen()
+        ? "你退到了廊下。桌上正在落票，你的亡者票还攥在手里。"
+        : "你已出局，观战中。他们还在桌边争论。";
     } else if (state.speakingId) {
       const speech = state.speakingText || "";
       const isNarrow = window.matchMedia("(max-width: 820px)").matches;
@@ -2538,13 +2951,38 @@ state.lastVotes = null;
       return label;
     }
     const message = (state.game && state.game.message) || "";
-    if (message.includes("凶手胜") || message.includes("凶手还站着")) {
+    if (message.includes("凶手胜") || message.includes("凶手还站着") || message.includes("逃脱")) {
       return "凶手胜";
     }
     if (message.includes("好人胜") || message.includes("凶手伏法")) {
       return "好人胜";
     }
     return "";
+  }
+
+  function murdererStands() {
+    const name = resolveRevealName();
+    if (!name || name === "终局揭晓") {
+      return youRole() === "murderer" && youAlive();
+    }
+    const player = players().find((item) => item.name === name
+      || item.id === name
+      || displayName(item) === name);
+    if (player) {
+      return player.alive !== false;
+    }
+    return youRole() === "murderer" && youAlive();
+  }
+
+  function fallbackWinnerLabel() {
+    if (!isFinished()) {
+      return "";
+    }
+    const murderer = resolveRevealName();
+    if (!murderer || murderer === "终局揭晓") {
+      return "";
+    }
+    return murdererStands() ? "凶手胜" : "好人胜";
   }
 
   function resolveRevealName() {
@@ -2577,12 +3015,12 @@ state.lastVotes = null;
     return "终局揭晓";
   }
 
-  function revealRoleLabel() {
+  function revealRoleLabel(escaped = false) {
     const name = resolveRevealName();
     if (!name || name === "终局揭晓") {
       return "凶手 · 待卷宗封存";
     }
-    return "凶手";
+    return escaped ? "凶手 · 未被处决" : "凶手 · 已落网";
   }
 
   function hashIndex(text, size) {
@@ -2989,15 +3427,16 @@ state.lastVotes = null;
       overlay.setAttribute("aria-hidden", "true");
       return;
     }
-    const winner = inferredWinnerLabel();
+    const winner = inferredWinnerLabel() || fallbackWinnerLabel() || "天亮了";
+    const escaped = winner === "凶手胜" && murdererStands();
     const result = winner === "好人胜" ? "villagers" : (winner === "凶手胜" ? "murderer" : "unknown");
     $("end-frame").dataset.result = result;
     $("end-kicker").textContent = result === "murderer" ? "NIGHTFALL · 结局" : "DAWN · 结局";
-    $("end-title").textContent = winner || "天亮了";
+    $("end-title").textContent = escaped ? "凶手逃脱" : winner;
     $("end-subtitle").textContent = dedupeEndMessage((state.game && state.game.message)
       || "雪停了，真相留在了桌上。");
     $("end-murderer").textContent = resolveRevealName();
-    $("end-murderer-role").textContent = revealRoleLabel();
+    $("end-murderer-role").textContent = revealRoleLabel(escaped);
     const role = youRole();
     $("end-you").textContent = `你 · ${ROLE_LABEL[role] || "身份未知"}`;
     const youDead = Boolean(state.game && state.game.you_alive === false)
@@ -3669,6 +4108,30 @@ state.lastVotes = null;
     });
     $("inspect-close").addEventListener("click", closeInspect);
     $("inspect-confirm").addEventListener("click", handleInspect);
+    $("inspect-private").addEventListener("click", () => {
+      if (state.busy || state.inspectUsed) {
+        return;
+      }
+      state.inspectReveal = false;
+      renderInspect();
+    });
+    $("inspect-public").addEventListener("click", () => {
+      if (state.busy || state.inspectUsed) {
+        return;
+      }
+      state.inspectReveal = true;
+      renderInspect();
+    });
+    $("spectate-advance").addEventListener("click", doAdvance);
+    $("spectate-log").addEventListener("click", openDrawer);
+    $("ghost-confirm").addEventListener("click", doGhostVote);
+    $("ghost-hold").addEventListener("click", () => {
+      if (state.busy || state.ghostVoteUsed) {
+        return;
+      }
+      state.ghostDismissed = true;
+      render();
+    });
     $("last-words-input").addEventListener("input", () => {
       const button = $("last-words-button");
       button.disabled = state.busy || !$("last-words-input").value.trim();
@@ -4028,6 +4491,7 @@ state.lastVotes = null;
       ? (findPlayer(executedId) || players().find((player) => player.name === executedName || player.name === executedId))
       : null;
     const executedActualId = executedPlayer ? executedPlayer.id : executedId;
+    const stalemateCount = Number((result && (result.stalemate_count ?? result.stalemateCount)) || 0);
     state.voteResult = {
       votes,
       tally,
@@ -4038,7 +4502,12 @@ state.lastVotes = null;
       message: String((result && result.message) || ""),
       tie: Boolean(result && (result.tie || result.tied))
         || /平票|僵局/u.test(String((result && result.message) || "")),
+      thresholdReduced: Boolean(result && (result.threshold_reduced || result.thresholdReduced))
+        || stalemateCount >= 2,
     };
+    if (state.voteResult.thresholdReduced) {
+      state.thresholdReduced = true;
+    }
     state.lastVotes = state.voteResult;
     state.lastVoteResult = state.voteResult;
     state.nominationMode = false;
@@ -4176,7 +4645,12 @@ state.lastVotes = null;
 
     const message = killedName
       ? (killedName === "你" ? "天亮时，你没有下楼。" : `天亮时，${killedName} 没有下楼。`)
-      : ((result && result.message) || "天亮了，没有人死。");
+      : ((result && result.message) || "天亮了，雪地上多了一行脚印。");
+    if (killedName) {
+      state.lastKilledName = killedName;
+    } else {
+      state.lastKilledName = "";
+    }
     showReport(message, killedName ? "warn" : "info");
     pushLocalEvent({
       type: "night",
@@ -4284,6 +4758,9 @@ state.lastVotes = null;
           state.game.dead.push(player.id);
         }
       }
+      if (state.game && player.id === youId()) {
+        state.game.you_alive = false;
+      }
     }
   }
 
@@ -4353,7 +4830,7 @@ state.lastVotes = null;
       return;
     }
     if (!youAlive()) {
-      runAction(observeNext);
+      doAdvance();
       return;
     }
     const phase = currentPhase();
@@ -4488,6 +4965,19 @@ state.lastVotes = null;
     state.inspectUsed = false;
     state.inspectResult = null;
     state.inspectAvailable = null;
+    state.inspectReveal = false;
+    state.inspectRevealed = false;
+    state.ghostVoteAvailable = null;
+    state.ghostVoteUsed = false;
+    state.ghostTargetId = null;
+    state.ghostVotes = [];
+    state.ghostDismissed = false;
+    state.advancing = false;
+    state.lastKilledName = "";
+    state.thresholdReduced = false;
+    state.mockSpectateStep = 0;
+    state.mockSpectateVotes = [];
+    state.mockGhostVote = null;
     state.lastWordsAvailable = null;
     state.lastWordsProbed = false;
     state.lastWordsUsed = false;
@@ -4504,8 +4994,13 @@ state.lastVotes = null;
     state.endPending = false;
     state.endRevealed = false;
     state.mockLastVoteTie = false;
+    state.mockSpectateStep = 0;
+    state.mockSpectateVotes = [];
+    state.mockGhostVote = null;
     $("confide-panel").classList.add("hidden");
     $("inspect-panel").classList.add("hidden");
+    $("spectate-panel").classList.add("hidden");
+    $("ghost-vote-panel").classList.add("hidden");
     $("runoff-panel").classList.add("hidden");
     $("last-words-form").classList.add("hidden");
     $("end-last-words-form").classList.add("hidden");
@@ -4534,14 +5029,15 @@ state.lastVotes = null;
   function mockCreate() {
     const forcedVillager = [
       "you-die", "short", "short2", "execute", "execute3", "vote-you", "tie",
-      "runoff", "runoff2", "inspect", "betray", "lastwords",
+      "runoff", "runoff2", "inspect", "betray", "lastwords", "spectate",
     ].includes(state.mockCase);
     const youMurderer = state.mockCase === "murderer"
       ? true
       : (forcedVillager ? false : Math.random() < 0.38);
+    const isSpectate = state.mockCase === "spectate";
     const murderer = youMurderer
       ? "p0"
-      : (state.mockCase ? "p5" : randomOf(MOCK_AGENTS).id);
+      : (isSpectate ? "p5" : (state.mockCase ? "p5" : randomOf(MOCK_AGENTS).id));
     state.murdererId = murderer;
     state.murdererName = murderer === "p0"
       ? "你"
@@ -4556,6 +5052,18 @@ state.lastVotes = null;
     state.runoffStalemate = 0;
     state.ballotTargetId = null;
     state.ballotReason = "";
+    state.mockSpectateStep = 0;
+    state.mockSpectateVotes = [];
+    state.mockGhostVote = null;
+    state.ghostVoteUsed = false;
+    state.ghostTargetId = null;
+    state.ghostVotes = [];
+    state.ghostDismissed = false;
+    state.ghostVoteAvailable = null;
+    state.thresholdReduced = false;
+    state.lastKilledName = "";
+    state.inspectReveal = false;
+    state.inspectRevealed = false;
 
     const players = [
       { id: "p0", name: "你", public: "封山夜最后一位住客", alive: true, is_you: true },
@@ -4720,7 +5228,7 @@ state.lastVotes = null;
     };
   }
 
-  function mockInspect(targetId) {
+  function mockInspect(targetId, reveal = false) {
     const target = findPlayer(targetId);
     if (!target || target.is_you || target.alive === false) {
       throw new Error("那不在桌上了。");
@@ -4728,8 +5236,9 @@ state.lastVotes = null;
     const murderer = target.id === state.murdererId;
     return {
       result: murderer ? "murderer" : "not_murderer",
-      public_line: `我查过${target.name}。`,
+      public_line: reveal ? `我查过${target.name}。` : "",
       remaining: 0,
+      revealed: Boolean(reveal),
     };
   }
 
@@ -4780,15 +5289,14 @@ state.lastVotes = null;
     const voteYouOut = mode === "vote-you" && firstRound;
     const shortVote = (mode === "short" || mode === "short2" || mode === "you-die") && firstRound;
     const tieCase = mode === "tie" && firstRound;
+    const spectateTie = mode === "spectate" && firstRound;
     const runoffCase = mode === "runoff" || mode === "runoff2";
     const runoffTie = runoffCase && firstRound;
     const runoffAgain = mode === "runoff2" && state.mockVotesCast === 1;
     let threshold = Math.floor(alive.length / 2) + 1;
-    if (executeThree || voteYouOut) {
-      threshold = 3;
-    }
-    if (runoffCase && currentPhase() === "runoff") {
-      threshold = 2;
+    if (state.runoffStalemate >= 2) {
+      threshold = Math.max(1, threshold - 1);
+      state.thresholdReduced = true;
     }
     const others = alive.filter((player) => player.id !== target.id && player.id !== youId());
     const votes = [];
@@ -4797,9 +5305,9 @@ state.lastVotes = null;
     agents.forEach((voter, index) => {
       let chosen = target;
       if (voteYouOut) {
-        chosen = index < 3 ? (me || target) : (others[index % others.length] || target);
+        chosen = index < 4 ? (me || target) : (others[index % others.length] || target);
       } else if (executeThree) {
-        chosen = index < 2 ? target : (others[index % others.length] || target);
+        chosen = index < 3 ? target : (others[index % others.length] || target);
       } else if (executeAll) {
         chosen = target;
       } else if (shortVote) {
@@ -4818,7 +5326,7 @@ state.lastVotes = null;
         } else {
           chosen = (index % 2 === 0) ? target : rival;
         }
-      } else if (tieCase) {
+      } else if (tieCase || spectateTie) {
         const rival = others[0] || target;
         if (voter.id === target.id) {
           chosen = rival;
@@ -4917,6 +5425,29 @@ state.lastVotes = null;
         ? "平票，今晚无人被处决，僵局一直拖到天亮。"
         : `最高 ${topCount} 票，未达 ${threshold} 票门槛。`);
     const runoffRival = others[0] || target;
+    if (spectateTie) {
+      const nightLog = state.game.public_log;
+      const nightMessage = "平票，今晚无人被处决，天黑了。";
+      nightLog.push({
+        seq: nextSeq(nightLog),
+        speaker_id: "__narration",
+        speaker_name: "旁白",
+        text: nightMessage,
+        day: state.game.day,
+      });
+      state.mockLastVoteTie = true;
+      return {
+        votes,
+        tally,
+        threshold,
+        executed: null,
+        tie: true,
+        phase: "night",
+        message: nightMessage,
+        public_log: nightLog.slice(),
+        aftermath: state.mockAftermath.slice(),
+      };
+    }
     if (runoffTie || runoffAgain) {
       const runoffMessage = runoffTie
         ? "平票，进入加赛。只投平票的那几个人。"
@@ -4982,36 +5513,193 @@ state.lastVotes = null;
     };
   }
 
+  function mockNarration(text, day) {
+    const log = state.game.public_log;
+    log.push({
+      seq: nextSeq(log),
+      speaker_id: "__narration",
+      speaker_name: "旁白",
+      text,
+      day: Number(day) || state.game.day,
+    });
+    return log;
+  }
+
+  function buildMockSpectateVotes(agents, scripted) {
+    return agents.map((agent, index) => {
+      const fallback = agents[(index + 1) % agents.length];
+      const targetId = scripted[agent.id] || (fallback ? fallback.id : agent.id);
+      const target = findPlayer(targetId) || fallback || agent;
+      return {
+        voter_id: agent.id,
+        voter_name: agent.name,
+        target_id: target.id,
+        target_name: target.name,
+        reason: randomOf(MOCK_VOTE_REASONS).replace("{target}", target.name),
+      };
+    });
+  }
+
+  function mockGhostVote(targetId) {
+    const target = findPlayer(targetId);
+    if (!target || target.alive === false || target.is_you) {
+      throw new Error("那不在桌上了。");
+    }
+    if (state.ghostVoteUsed) {
+      throw new Error("亡者票已经用过了。");
+    }
+    const vote = {
+      voter_id: youId(),
+      voter_name: "你（亡者）",
+      target_id: target.id,
+      target_name: target.name,
+      reason: "最后一票。",
+    };
+    state.mockGhostVote = vote;
+    const votes = state.mockSpectateVotes.concat(vote);
+    const tally = tallyFromVotes(normalizeVotes(votes));
+    const threshold = Math.floor(mockAlive().length / 2) + 1;
+    const log = mockNarration(`一只苍白的手把最后一票压在 ${target.name} 面前。`);
+    return {
+      day: state.game.day,
+      phase: "defense",
+      votes,
+      tally,
+      threshold,
+      executed: null,
+      tie: false,
+      winner: null,
+      ghost_vote_available: false,
+      message: "亡者票压进了票板。",
+      public_log: log.slice(),
+    };
+  }
+
+  function mockAdvance() {
+    if (!state.game) {
+      throw new Error("还没有开局。");
+    }
+    const alive = mockAlive();
+    const agents = alive.filter((player) => !player.is_you);
+    const day = (state.game.day || 1) + 1;
+    state.game.day = day;
+    state.mockSpectateStep += 1;
+    const step = state.mockSpectateStep;
+
+    if (step === 1) {
+      const scripted = { p1: "p5", p2: "p5", p3: "p1", p4: "p2", p5: "p1" };
+      const votes = buildMockSpectateVotes(agents, scripted);
+      state.mockSpectateVotes = votes;
+      const threshold = Math.floor(mockAlive().length / 2) + 1;
+      const log = mockNarration(`第 ${day} 天，桌上重新落票。你退在廊下，只看。`);
+      return {
+        day,
+        phase: "defense",
+        votes,
+        tally: tallyFromVotes(normalizeVotes(votes)),
+        threshold,
+        executed: null,
+        tie: false,
+        winner: null,
+        ghost_vote_available: !state.ghostVoteUsed,
+        message: "桌上重新落票。亡者票还压在你袖子里。",
+        public_log: log.slice(),
+      };
+    }
+
+    const votes = state.mockSpectateVotes.slice();
+    if (state.mockGhostVote) {
+      votes.push(state.mockGhostVote);
+    }
+    const tally = tallyFromVotes(normalizeVotes(votes));
+    const threshold = Math.floor(mockAlive().length / 2) + 1;
+    const top = tally[0] || { id: "", count: 0 };
+    const tieTop = tally.length > 1 && tally[1].count === top.count;
+    let executedId = (!tieTop && top.id && top.count >= threshold) ? top.id : "";
+    if (!executedId && step >= 3) {
+      const murdererAlive = findPlayer(state.murdererId);
+      if (murdererAlive && murdererAlive.alive !== false) {
+        executedId = murdererAlive.id;
+      }
+    }
+
+    if (!executedId) {
+      const pool = mockAlive().filter((player) => player.id !== state.murdererId && !player.is_you);
+      const victim = randomOf(pool);
+      if (victim) {
+        markMockDead(victim.id);
+      }
+      state.thresholdReduced = true;
+      const message = `最高 ${top.count} 票，未达 ${threshold} 票门槛；天亮时，${victim ? victim.name : "又一个人"} 没有下楼。`;
+      const log = mockNarration(message, day);
+      return {
+        day,
+        phase: "spectating",
+        votes,
+        tally,
+        threshold,
+        executed: null,
+        tie: true,
+        killed: victim ? { id: victim.id, name: victim.name } : null,
+        winner: null,
+        ghost_vote_available: !state.ghostVoteUsed,
+        threshold_reduced: true,
+        message,
+        public_log: log.slice(),
+      };
+    }
+
+    const executed = findPlayer(executedId);
+    markMockDead(executedId);
+    const executedName = executed ? executed.name : playerName(executedId);
+    const winner = executedId === state.murdererId ? "villagers" : null;
+    const message = winner
+      ? `${executedName} 被处决。牌翻开——正是他。天亮了，旅馆的门开了。`
+      : `${executedName} 被处决，可牌翻过来不对。`;
+    const log = mockNarration(message, day);
+    return {
+      day,
+      phase: winner ? "ended" : "spectating",
+      votes,
+      tally,
+      threshold,
+      executed: { id: executedId, name: executedName },
+      tie: false,
+      winner,
+      reveal: winner ? mockReveal() : null,
+      ghost_vote_available: false,
+      message,
+      public_log: log.slice(),
+    };
+  }
+
   function mockNight(targetId) {
     const youMurderer = state.murdererId === "p0";
-    const forceYouDie = state.mockCase === "you-die";
+    const forceYouDie = state.mockCase === "you-die" || state.mockCase === "spectate";
     const forceAgentDie = (state.mockCase === "short" || state.mockCase === "short2") && !youMurderer;
-    const tieNight = state.mockLastVoteTie;
     let killedId = "";
     let killedName = "";
-    if (tieNight) {
-      killedId = "";
-      killedName = "";
-    } else if (youMurderer) {
-      const target = findPlayer(targetId);
-      if (!target || target.alive === false || target.is_you) {
-        throw new Error("请选择一名在场的目标。");
-      }
-      killedId = target.id;
-      killedName = target.name;
-    } else if (forceYouDie || forceAgentDie || Math.random() < 0.85) {
-      const murderer = findPlayer(state.murdererId);
-      if (murderer && murderer.alive !== false) {
+    const murderer = findPlayer(state.murdererId);
+
+    if (murderer && murderer.alive !== false) {
+      if (youMurderer) {
+        const target = findPlayer(targetId);
+        if (!target || target.alive === false || target.is_you) {
+          throw new Error("请选择一名在场的目标。");
+        }
+        killedId = target.id;
+        killedName = target.name;
+      } else {
         const pool = mockAlive().filter((player) => player.id !== state.murdererId);
         const youTicket = pool.find((player) => player.is_you);
         const agentPool = pool.filter((player) => !player.is_you);
-        let victim;
+        let victim = null;
         if (forceYouDie && youTicket) {
           victim = youTicket;
         } else if (forceAgentDie && agentPool.length) {
           victim = randomOf(agentPool);
         } else {
-          victim = youTicket && Math.random() < 0.45 ? youTicket : randomOf(pool);
+          victim = youTicket && Math.random() < 0.4 ? youTicket : randomOf(pool);
         }
         if (victim) {
           killedId = victim.id;
@@ -5019,6 +5707,14 @@ state.lastVotes = null;
         }
       }
     }
+    if (!killedId && murderer && murderer.alive !== false) {
+      const victim = randomOf(mockAlive().filter((player) => player.id !== state.murdererId));
+      if (victim) {
+        killedId = victim.id;
+        killedName = victim.name;
+      }
+    }
+
     if (killedId) {
       markMockDead(killedId);
       const night = state.game.day;
@@ -5039,22 +5735,22 @@ state.lastVotes = null;
       }
     }
 
-    const murderer = findPlayer(state.murdererId);
+    const murdererAfter = findPlayer(state.murdererId);
+    const aliveAfter = mockAlive().length;
     let winner = null;
-    if (murderer && murderer.alive === false) {
+    if (murdererAfter && murdererAfter.alive === false) {
       winner = "villagers";
-    } else if (killedId === youId() || mockAlive().length <= 2) {
+    } else if (aliveAfter <= 2) {
       winner = "murderer";
     }
+    const spectating = !winner && killedId === youId();
 
     const night = state.game.day;
     const day = winner ? night : night + 1;
-    const phase = winner ? "ended" : "discussion";
-    const message = tieNight
-      ? "平票僵局，今夜无人再死。天亮后接着问。"
-      : (killedName
-        ? `天亮时，${killedName} 没有下楼。`
-        : "天亮时，没有人死。雪把脚印盖住了。");
+    const phase = winner ? "ended" : (spectating ? "spectating" : "discussion");
+    const message = killedId
+      ? `天亮时，${killedName} 没有下楼。`
+      : "天亮时，雪地上多了一行脚印。";
     const log = state.game.public_log;
     log.push({
       seq: nextSeq(log),
@@ -5065,6 +5761,9 @@ state.lastVotes = null;
     });
     state.game.day = day;
     state.mockLastVoteTie = false;
+    if (spectating) {
+      state.ghostVoteAvailable = state.ghostVoteUsed ? false : true;
+    }
     return {
       killed: killedId ? { id: killedId, name: killedName } : null,
       aftermath: state.mockAftermath.slice(),
@@ -5074,6 +5773,7 @@ state.lastVotes = null;
       reveal: winner ? mockReveal() : null,
       message,
       public_log: log.slice(),
+      ghost_vote_available: spectating ? true : (winner ? false : undefined),
     };
   }
 
@@ -5085,6 +5785,9 @@ state.lastVotes = null;
     player.alive = false;
     if (state.game && Array.isArray(state.game.dead) && !state.game.dead.some((item) => item === id)) {
       state.game.dead.push(id);
+    }
+    if (state.game && id === youId()) {
+      state.game.you_alive = false;
     }
   }
 

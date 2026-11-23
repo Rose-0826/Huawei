@@ -78,6 +78,21 @@
           </div>
           <span id="discussion-count" class="discussion-count">0 条</span>
         </header>
+        <div id="spectate-panel" class="spectate-panel hidden" aria-live="polite" aria-label="廊下观战">
+          <div class="spectate-head">
+            <p class="spectate-kicker">
+              <span>GALLERY · 廊下</span>
+              <span id="spectate-day" class="spectate-day">第 1 天</span>
+            </p>
+            <span class="spectate-stamp" aria-hidden="true">旁观</span>
+          </div>
+          <p id="spectate-line" class="spectate-line">你已出局，观战中。</p>
+          <p id="spectate-note" class="spectate-note"></p>
+          <div class="spectate-actions">
+            <button id="spectate-advance" class="primary-button" type="button">继续观战</button>
+            <button id="spectate-log" class="ghost-button" type="button">翻卷宗</button>
+          </div>
+        </div>
         <div id="confide-panel" class="confide-panel hidden" aria-live="polite" aria-label="密谈">
           <p class="confide-kicker">
             <span>WHISPER · 廊下低声</span>
@@ -110,14 +125,24 @@
             <span>INSPECT · 掀牌查验</span>
             <span id="inspect-count" class="confide-count">本局 1 次</span>
           </p>
-          <p id="inspect-lede" class="confide-lede">只掀一个人的底牌。查完，桌上都会知道你查过谁。</p>
+          <p id="inspect-lede" class="confide-lede">只掀一个人的底牌。牌在你手里，公不公开由你决定。</p>
           <div id="inspect-targets" class="confide-targets" role="group" aria-label="查验对象"></div>
+          <div id="inspect-choice" class="inspect-choice hidden" role="group" aria-label="查验后是否公开">
+            <p id="inspect-choice-lede" class="inspect-choice-lede">这张牌，给桌上的人看吗？</p>
+            <div class="inspect-choice-row">
+              <button id="inspect-private" class="ghost-button is-picked" type="button"
+                      aria-pressed="true">只自己看</button>
+              <button id="inspect-public" class="ghost-button" type="button"
+                      aria-pressed="false">公开我查过 X</button>
+            </div>
+          </div>
           <div class="confide-actions">
-            <button id="inspect-confirm" class="primary-button" type="button" disabled>确认查验</button>
+            <button id="inspect-confirm" class="primary-button" type="button" disabled>悄悄看牌</button>
             <button id="inspect-close" class="ghost-button" type="button">收起</button>
           </div>
           <div id="inspect-result" class="inspect-result hidden" role="status">
             <p id="inspect-verdict" class="inspect-verdict"></p>
+            <p id="inspect-visibility" class="inspect-visibility"></p>
             <p id="inspect-public" class="inspect-public"></p>
           </div>
         </div>
@@ -179,6 +204,19 @@
           <span id="runoff-note" class="ballot-note">只在平票的人之间再投一次</span>
         </div>
         <div id="runoff-options" class="ballot-options" role="group" aria-label="加赛候选"></div>
+      </div>
+      <div id="ghost-vote-panel" class="ghost-vote-panel hidden" role="group" aria-label="亡者票">
+        <div class="ghost-head">
+          <span class="ghost-kicker">LAST BALLOT · 亡者票</span>
+          <span id="ghost-note" class="ghost-note">只能投一次</span>
+        </div>
+        <p id="ghost-lede" class="ghost-lede">你已不在桌上，可这一票还压在袖子里。</p>
+        <div id="ghost-targets" class="ghost-targets" role="group" aria-label="亡者票目标"></div>
+        <div class="ghost-actions">
+          <button id="ghost-confirm" class="primary-button is-ghost" type="button" disabled>投出你的一票</button>
+          <button id="ghost-hold" class="ghost-button" type="button">留着这票</button>
+        </div>
+        <span id="ghost-stamp" class="ghost-stamp hidden" aria-live="polite">亡者票已用</span>
       </div>
       <div id="confirm-strip" class="confirm-strip hidden" role="alertdialog" aria-live="assertive">
         <span id="confirm-text"></span>
