@@ -119,3 +119,11 @@ BLOOD_POISON_FALLBACK_TEXT: Final[str] = (
 BLOOD_WHISPER_TRUST_DELTA: Final[float] = 12.0
 BLOOD_WHISPER_SUSPICION_DELTA: Final[float] = -0.08
 BLOOD_WHISPER_PUBLIC_TEMPLATE: Final[str] = "{a} 和 {b} 在廊下低声说了几句。"
+# 第九轮：结算播报文案，必须与 public_log 末条逐字一致
+BLOOD_RUNOFF_MESSAGE: Final[str] = "票数并列，进入加赛。"
+BLOOD_STILL_TIE_MESSAGE: Final[str] = "仍平票，今晚无人被处决。"
+BLOOD_EXECUTE_MESSAGE: Final[str] = "{name} 被投票处决。"
+BLOOD_NIGHT_MESSAGE: Final[str] = "天亮时，{name} 没有下楼。"
+BLOOD_POISON_NOTE: Final[str] = "被下药者的私密信息有误，与夜杀无关。"
+# 必须凭持有人身份才能认领的线索物件
+OWNERSHIP_KEY_TERMS: Final[tuple[str, ...]] = ("名分", "银元", "手帕")

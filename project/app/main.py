@@ -103,6 +103,9 @@ class BloodRevealPublic(APIModel):
     minion_name: str = ""
     poisoned_id: str = ""
     poisoned_name: str = ""
+    poisoned_note: str = ""
+    killed_id: str = ""
+    killed_name: str = ""
     succession: list[BloodSuccessionPublic] = Field(default_factory=list)
 
 
@@ -134,6 +137,8 @@ class BloodStateResponse(APIModel):
     )
     stalemate_count: int = 0
     ghost_vote_available: bool = False
+    your_result: Literal["win", "lose", "draw"] | None = None
+    you_win: bool | None = None
 
 
 class BloodReplyPublic(APIModel):
@@ -235,6 +240,7 @@ class BloodNightResponse(APIModel):
     message: str
     public_log: list[BloodLogEntryPublic]
     aftermath: list[dict[str, object]] = Field(default_factory=list)
+    you_alive: bool = True
 
 
 class BloodAdvanceResponse(APIModel):
@@ -249,6 +255,7 @@ class BloodAdvanceResponse(APIModel):
     winner: Literal["good", "murderer"] | None = None
     reveal: BloodRevealPublic | None = None
     ghost_vote_available: bool = False
+    new_entries: list[BloodLogEntryPublic] = Field(default_factory=list)
 
 
 class BloodConfideRequest(APIModel):
@@ -663,6 +670,8 @@ def _blood_state_public(view: BloodView) -> BloodStateResponse:
         runoff_candidates=_blood_runoff_public(view.runoff_candidates),
         stalemate_count=view.stalemate_count,
         ghost_vote_available=view.ghost_vote_available,
+        your_result=view.your_result,
+        you_win=view.you_win,
     )
 
 
@@ -765,6 +774,9 @@ def _blood_reveal_public(
         minion_name=reveal.minion_name,
         poisoned_id=reveal.poisoned_id,
         poisoned_name=reveal.poisoned_name,
+        poisoned_note=reveal.poisoned_note,
+        killed_id=reveal.killed_id,
+        killed_name=reveal.killed_name,
         succession=[
             BloodSuccessionPublic(
                 day=int(item.get("day", 0)),
@@ -798,6 +810,7 @@ def _blood_night_public(
         message=outcome.message,
         public_log=_blood_log_public(state.public_log),
         aftermath=[dict(item) for item in outcome.aftermath],
+        you_alive=outcome.you_alive,
     )
 
 
@@ -835,6 +848,7 @@ def _blood_advance_public(outcome: AdvanceOutcome) -> BloodAdvanceResponse:
         winner=outcome.winner,
         reveal=_blood_reveal_public(outcome.reveal),
         ghost_vote_available=outcome.ghost_vote_available,
+        new_entries=_blood_log_public(outcome.new_entries),
     )
 
 
