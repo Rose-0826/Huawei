@@ -26,7 +26,13 @@ BLOOD_MAX_FACTS_PER_DAY: Final[int] = 2
 BLOOD_VOTE_REASON_MAX_CHARS: Final[int] = 80
 
 BLOOD_VOTE_REASON_MIN_QUOTE_CHARS: Final[int] = 4
-BLOOD_AFTERMATH_MAX_DAYS: Final[int] = 30
+
+# 夜间必杀与雪停上限：第 8 天仍无胜负则凶手趁乱脱身
+BLOOD_MAX_DAYS: Final[int] = 8
+BLOOD_AFTERMATH_MAX_DAYS: Final[int] = BLOOD_MAX_DAYS
+# 连续僵局的轮次数：达到后下一轮门槛 -1（最低 2）
+BLOOD_STALEMATE_RELIEF_AFTER: Final[int] = 2
+BLOOD_STALEMATE_MIN_THRESHOLD: Final[int] = 2
 
 # 真人查验（每局 1 次，只答是/否凶手）
 BLOOD_INSPECT_USE_PER_GAME: Final[int] = 1

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app import blood, blood_ai
 from app.blood import (
+    AdvanceOutcome,
     BloodLogEntry,
     BloodState,
     BloodStore,
@@ -100,7 +101,7 @@ class BloodStateResponse(APIModel):
 
     game_id: str
     day: int
-    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "spectating", "ended"]
     players: list[BloodPlayerPublic]
     you: BloodYouPublic
     public_log: list[BloodLogEntryPublic]
@@ -115,6 +116,7 @@ class BloodStateResponse(APIModel):
         default_factory=list
     )
     stalemate_count: int = 0
+    ghost_vote_available: bool = False
 
 
 class BloodReplyPublic(APIModel):
@@ -130,7 +132,7 @@ class BloodTalkResponse(APIModel):
 
     replies: list[BloodReplyPublic]
     public_log: list[BloodLogEntryPublic]
-    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "spectating", "ended"]
     notice: str = ""
 
 
@@ -156,17 +158,18 @@ class BloodNomineePublic(APIModel):
 class BloodNominateResponse(APIModel):
     """提名后进入自辩阶段。"""
 
-    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "spectating", "ended"]
     target: BloodNomineePublic
     defense: BloodReplyPublic
     public_log: list[BloodLogEntryPublic]
 
 
 class BloodVoteRequest(APIModel):
-    """真人投票，可投提名目标之外的人，理由可选。"""
+    """真人投票，可投提名目标之外的人；死者可投唯一一枚亡者票。"""
 
     target_id: str = Field(min_length=1)
     reason: str | None = None
+    ghost: bool = False
 
 
 class BloodVotePublic(APIModel):
@@ -190,7 +193,7 @@ class BloodVoteResponse(APIModel):
     reveal: BloodRevealPublic | None
     message: str
     public_log: list[BloodLogEntryPublic]
-    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "spectating", "ended"]
     aftermath: list[dict[str, object]] = Field(default_factory=list)
     runoff_candidates: list[BloodRunoffCandidatePublic] = Field(
         default_factory=list
@@ -209,12 +212,26 @@ class BloodNightResponse(APIModel):
 
     killed: BloodDeadPublic | None
     day: int
-    phase: Literal["discussion", "defense", "runoff", "night", "ended"]
+    phase: Literal["discussion", "defense", "runoff", "night", "spectating", "ended"]
     winner: Literal["good", "murderer"] | None
     reveal: BloodRevealPublic | None = None
     message: str
     public_log: list[BloodLogEntryPublic]
     aftermath: list[dict[str, object]] = Field(default_factory=list)
+
+
+class BloodAdvanceResponse(APIModel):
+    """观战推进：agent 代跑当天流程后的状态。"""
+
+    phase: Literal["discussion", "defense", "runoff", "night", "spectating", "ended"]
+    day: int
+    public_log: list[BloodLogEntryPublic]
+    votes: list[BloodVotePublic]
+    executed: BloodDeadPublic | None = None
+    killed: BloodDeadPublic | None = None
+    winner: Literal["good", "murderer"] | None = None
+    reveal: BloodRevealPublic | None = None
+    ghost_vote_available: bool = False
 
 
 class BloodConfideRequest(APIModel):
@@ -236,9 +253,10 @@ class BloodConfideResponse(APIModel):
 
 
 class BloodInspectRequest(APIModel):
-    """真人查验一名在场者。"""
+    """真人查验一名在场者；reveal 为真才公开结果。"""
 
     target_id: str = Field(min_length=1)
+    reveal: bool = False
 
 
 class BloodInspectResponse(APIModel):
@@ -247,6 +265,7 @@ class BloodInspectResponse(APIModel):
     result: Literal["murderer", "not_murderer"]
     public_line: str
     remaining: int
+    revealed: bool = False
 
 
 class BloodPrivateEntryPublic(APIModel):
@@ -309,6 +328,8 @@ BLOOD_ERRORS: dict[str, tuple[int, str]] = {
     "confide_text_invalid": (422, "密谈内容为空或过长"),
     "inspect_unavailable": (409, "你现在没有可用的查验"),
     "inspect_used": (409, "这次查验已经用过了"),
+    "ghost_not_available": (409, "你还活着，用不上亡者票"),
+    "ghost_vote_used": (409, "这枚亡者票已经投过了"),
     "you_are_alive": (409, "你还在场上，不能留遗言"),
     "last_words_used": (409, "遗言已经留过了"),
     "last_words_invalid": (422, "遗言内容为空或过长"),
@@ -413,6 +434,7 @@ def create_app(
             request.target_id,
             blood_reply,
             reason=request.reason or "",
+            ghost=request.ghost,
         )
         _raise_blood_error(outcome.error)
         state = blood_games.get(game_id)
@@ -435,6 +457,16 @@ def create_app(
         if state is None:
             _raise_blood_error("game_not_found")
         return _blood_night_public(state, outcome)
+
+    @application.post(
+        "/blood/games/{game_id}/advance",
+        response_model=BloodAdvanceResponse,
+    )
+    def advance_blood_game(game_id: str) -> BloodAdvanceResponse:
+        """观战推进：agent 代跑讨论、提名、投票与夜晚。"""
+        outcome = blood.advance(blood_games, game_id)
+        _raise_blood_error(outcome.error)
+        return _blood_advance_public(outcome)
 
     @application.post(
         "/blood/games/{game_id}/confide",
@@ -471,12 +503,18 @@ def create_app(
         request: BloodInspectRequest,
     ) -> BloodInspectResponse:
         """真人查验一名在场者是否凶手，每局 1 次。"""
-        outcome = blood.inspect(blood_games, game_id, request.target_id)
+        outcome = blood.inspect(
+            blood_games,
+            game_id,
+            request.target_id,
+            reveal=request.reveal,
+        )
         _raise_blood_error(outcome.error)
         return BloodInspectResponse(
             result=outcome.result,
             public_line=outcome.public_line,
             remaining=outcome.remaining,
+            revealed=outcome.revealed,
         )
 
     @application.get(
@@ -607,6 +645,7 @@ def _blood_state_public(view: BloodView) -> BloodStateResponse:
         you_alive=view.you_alive,
         runoff_candidates=_blood_runoff_public(view.runoff_candidates),
         stalemate_count=view.stalemate_count,
+        ghost_vote_available=view.ghost_vote_available,
     )
 
 
@@ -726,6 +765,43 @@ def _blood_night_public(
         message=outcome.message,
         public_log=_blood_log_public(state.public_log),
         aftermath=[dict(item) for item in outcome.aftermath],
+    )
+
+
+def _blood_advance_public(outcome: AdvanceOutcome) -> BloodAdvanceResponse:
+    return BloodAdvanceResponse(
+        phase=outcome.phase,
+        day=outcome.day,
+        public_log=_blood_log_public(outcome.public_log),
+        votes=[
+            BloodVotePublic(
+                voter_id=vote.voter_id,
+                voter_name=vote.voter_name,
+                target_id=vote.target_id,
+                target_name=vote.target_name,
+                reason=vote.reason,
+            )
+            for vote in outcome.votes
+        ],
+        executed=(
+            BloodDeadPublic(
+                id=outcome.executed.id,
+                name=outcome.executed.name,
+            )
+            if outcome.executed is not None
+            else None
+        ),
+        killed=(
+            BloodDeadPublic(
+                id=outcome.killed.id,
+                name=outcome.killed.name,
+            )
+            if outcome.killed is not None
+            else None
+        ),
+        winner=outcome.winner,
+        reveal=_blood_reveal_public(outcome.reveal),
+        ghost_vote_available=outcome.ghost_vote_available,
     )
 
 
