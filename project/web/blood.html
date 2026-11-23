@@ -44,6 +44,8 @@
         </div>
       </div>
       <div class="blood-actions">
+        <button id="rules-button" class="ghost-button" type="button"
+                aria-haspopup="dialog" aria-controls="rules-overlay">规则</button>
         <button id="log-button" class="ghost-button" type="button"
                 aria-controls="log-drawer" aria-expanded="false">记录</button>
         <button id="restart-button" class="ghost-button" type="button">重开</button>
@@ -65,6 +67,7 @@
             <span class="table-seal">雪夜议事</span>
             <span id="table-day" class="table-day">第 1 夜</span>
             <span id="table-status" class="table-status">存活 6 人 · 过半需 4 票</span>
+            <span id="table-wait" class="table-wait hidden" role="status">桌上正低声商议……</span>
           </div>
           <div id="seats" class="seats"></div>
           <div id="speech-bubble" class="speech-bubble hidden" role="status"
@@ -243,6 +246,7 @@
   <section id="end-overlay" class="end-overlay hidden" role="dialog" aria-modal="true"
            aria-labelledby="end-title" aria-hidden="true">
     <div id="end-frame" class="end-frame" data-result="villagers">
+      <div id="end-body" class="end-body">
       <div id="end-portrait" class="end-portrait" aria-hidden="true"></div>
       <p id="end-kicker" class="kicker">DAWN · 结局</p>
       <h2 id="end-title">好人胜</h2>
@@ -302,10 +306,32 @@
         </div>
       </form>
       <p id="end-message" class="end-message">凶手、死者，以及每一个没说出口的谎，都留在这一夜。</p>
+      </div>
       <div class="end-actions">
         <button id="end-log" class="ghost-button" type="button">查看本局记录</button>
         <button id="end-restart" class="ghost-button" type="button">再来一局</button>
       </div>
+    </div>
+  </section>
+
+  <section id="rules-overlay" class="rules-overlay hidden" role="dialog" aria-modal="true"
+           aria-labelledby="rules-title" aria-hidden="true">
+    <div class="rules-frame">
+      <p class="kicker">HOW TO PLAY · 雪夜规则</p>
+      <h2 id="rules-title">圆桌上的六个人</h2>
+      <div class="rules-scroll">
+        <p>6 人局：1 恶魔 + 1 爪牙 + 4 镇民。你的身份每局随机。</p>
+        <ul>
+          <li>恶魔每夜杀 1 人；恶魔被处决时，若爪牙还活着，爪牙接位，游戏继续。</li>
+          <li>镇民中可能有 1 人被下药，他的一条私下信息是错的。</li>
+          <li>镇民每局有 1 次查验：只问一个人“是不是恶魔”；可以保密，也可以公开“我查过 X”。</li>
+          <li>讨论阶段可以密谈：每天 1 次、每局 3 次；内容只进私人日志，但可能被对方在公开场合漏出一句。</li>
+          <li>提名后先听自辩，再投票。票数需过半；平票进入加赛，再平票无人出局。</li>
+          <li>你出局后仍可观战，并保留 1 次亡者票。</li>
+        </ul>
+        <p class="rules-tip">白天讨论/自辩时点击桌上的人，可以把他的名字带进发言框，并高亮他今天的发言。</p>
+      </div>
+      <button id="rules-close" class="primary-button" type="button">知道了</button>
     </div>
   </section>
 

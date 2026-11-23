@@ -84,6 +84,7 @@
     lastSeq: 0,
     lastDayShown: 0,
     speakingId: null,
+    speakingId: null,
     speakingText: "",
     bubbleTimer: 0,
     lastVotes: null,
@@ -1411,6 +1412,9 @@ state.revealInfo = info;
       return false;
     }
     const phase = currentPhase();
+    if (phase === "discussion") {
+      return youAlive();
+    }
     if (phase === "nomination") {
       return youAlive();
     }
@@ -1467,7 +1471,9 @@ state.revealInfo = info;
         "aria-label",
         `${displayName(player)}，${player.alive === false ? "已出局" : "在场"}${player.is_you ? "，你" : ""}${selected ? "，已选中" : ""}`,
       );
-      if (selectable && phase === "nomination") {
+      if (selectable && phase === "discussion") {
+        seat.dataset.hint = "点名";
+      } else if (selectable && phase === "nomination") {
         seat.dataset.hint = "可提名";
       } else if (selectable && phase === "night") {
         seat.dataset.hint = "可动手";
@@ -1480,13 +1486,44 @@ state.revealInfo = info;
     }
   }
 
+  function mentionPlayer(playerId) {
+    const player = findPlayer(playerId);
+    const input = $("speak-input");
+    if (!player || !input || input.disabled) {
+      return;
+    }
+    const name = displayName(player);
+    const prefix = `${name}，`;
+    const current = input.value.trim();
+    if (!current.startsWith(prefix)) {
+      input.value = `${prefix}${current}`;
+    }
+    input.focus();
+    const day = Number(state.game && state.game.day) || 1;
+    document.querySelectorAll("#discussion-list .log-entry").forEach((node) => {
+      const same = node.dataset.speaker === String(player.id)
+        && Number(node.dataset.day) === day;
+      node.classList.toggle("mention-highlight", same);
+    });
+    window.clearTimeout(state.mentionTimer);
+    state.mentionTimer = window.setTimeout(() => {
+      document.querySelectorAll(".log-entry.mention-highlight")
+        .forEach((node) => node.classList.remove("mention-highlight"));
+    }, 4200);
+  }
+
   function onSeatClick(playerId) {
     const player = findPlayer(playerId);
     if (!player || !canSelectPlayer(player)) {
       return;
     }
     const phase = currentPhase();
+    if (phase === "discussion") {
+      mentionPlayer(playerId);
+      return;
+    }
     if (phase === "defense") {
+      mentionPlayer(playerId);
       state.ballotTargetId = playerId;
       state.selectedId = null;
       const options = $("ballot-options");
@@ -1516,6 +1553,7 @@ state.revealInfo = info;
     const whisper = narration && isWhisperText(text);
     const selfWhisper = whisper && isSelfWhisperText(text);
     const item = node("li", "log-entry");
+    item.dataset.day = String(Number(entry.day) || (state.game && state.game.day) || 1);
     if (isYou) {
       item.classList.add("you");
     }
@@ -3435,6 +3473,21 @@ state.revealInfo = info;
     const speakButton = $("speak-button");
     const secondary = $("secondary-button");
     const primary = $("primary-button");
+    const wait = $("table-wait");
+    if (wait) {
+      wait.classList.toggle("hidden", !state.busy);
+      if (state.busy) {
+        let label = "桌上正低声商议……";
+        if (state.ballotTargetId) {
+          label = "正在落票……";
+        } else if (phase === "defense") {
+          label = "正在质证……";
+        } else if (phase === "night") {
+          label = "夜色在动……";
+        }
+        wait.textContent = label;
+      }
+    }
 
     if (state.selectedId) {
       const selected = findPlayer(state.selectedId);
@@ -4907,6 +4960,32 @@ state.revealInfo = info;
     }
   }
 
+  function openRules() {
+    const overlay = $("rules-overlay");
+    if (!overlay) {
+      return;
+    }
+    overlay.classList.remove("hidden");
+    overlay.setAttribute("aria-hidden", "false");
+    const close = $("rules-close");
+    if (close) {
+      close.focus();
+    }
+  }
+
+  function closeRules() {
+    const overlay = $("rules-overlay");
+    if (!overlay) {
+      return;
+    }
+    overlay.classList.add("hidden");
+    overlay.setAttribute("aria-hidden", "true");
+    const button = $("rules-button");
+    if (button) {
+      button.focus();
+    }
+  }
+
   function bindEvents() {
     $("speak-form").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -5011,6 +5090,13 @@ state.revealInfo = info;
     });
     $("confirm-no").addEventListener("click", closeConfirm);
     $("restart-button").addEventListener("click", restartGame);
+    $("rules-button").addEventListener("click", openRules);
+    $("rules-close").addEventListener("click", closeRules);
+    $("rules-overlay").addEventListener("click", (event) => {
+      if (event.target === event.currentTarget) {
+        closeRules();
+      }
+    });
     $("end-restart").addEventListener("click", restartGame);
     $("log-button").addEventListener("click", () => {
       if (state.drawerOpen) {
@@ -5033,6 +5119,10 @@ state.revealInfo = info;
     });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") {
+        return;
+      }
+      if (!$("rules-overlay").classList.contains("hidden")) {
+        closeRules();
         return;
       }
       if (!$("confirm-strip").classList.contains("hidden")) {
