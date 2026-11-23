@@ -1288,6 +1288,42 @@ state.revealInfo = info;
     }
   }
 
+  function tableStatusText(phase) {
+    const alive = players().filter((player) => player.alive !== false).length;
+    const threshold = Math.floor(alive / 2) + 1;
+    const nameOf = (item) => {
+      if (typeof item === "string") {
+        return playerName(item);
+      }
+      return item ? (item.name || playerName(item.id) || "") : "";
+    };
+    if (phase === "runoff") {
+      const candidates = ((state.game && state.game.runoff_candidates) || [])
+        .map(nameOf)
+        .filter(Boolean);
+      return `加赛 · ${candidates.join(" / ") || "平票"} · 门槛 ${threshold}`;
+    }
+    if (phase === "defense") {
+      const target = state.nominated
+        || (state.ballotTargetId ? findPlayer(state.ballotTargetId) : null);
+      return `焦点 · ${target ? displayName(target) : "被提名者"} · 存活 ${alive} · 门槛 ${threshold}`;
+    }
+    if (state.voteResult) {
+      const tally = state.voteResult.tally;
+      let total = 0;
+      if (Array.isArray(tally)) {
+        total = tally.reduce((sum, entry) => sum + (Number(entry.count) || 0), 0);
+      } else if (tally && typeof tally === "object") {
+        total = Object.values(tally).reduce((sum, value) => sum + (Number(value) || 0), 0);
+      }
+      return `落票 · 共 ${total} 票 · 门槛 ${state.voteResult.threshold || threshold}`;
+    }
+    if (state.ballotTargetId) {
+      return `投票 · ${nameOf(findPlayer(state.ballotTargetId))} · 门槛 ${threshold}`;
+    }
+    return `存活 ${alive} 人 · 过半需 ${threshold} 票`;
+  }
+
   function renderHeader() {
     const day = state.game ? state.game.day : 1;
     const phase = currentPhase();
@@ -1298,6 +1334,10 @@ state.revealInfo = info;
     document.body.dataset.phase = phase;
     document.body.dataset.spectating = (!isFinished() && !youAlive() && Boolean(state.game)) ? "1" : "0";
     $("table-day").textContent = `第 ${day} 夜`;
+    const status = $("table-status");
+    if (status) {
+      status.textContent = tableStatusText(phase);
+    }
   }
 
   function orderedSeatPlayers() {
@@ -1414,6 +1454,11 @@ state.revealInfo = info;
       seat.classList.toggle("dead", player.alive === false);
       seat.classList.toggle("is-you", Boolean(player.is_you));
       seat.classList.toggle("speaking", state.speakingId === player.id);
+      const nominated = phase === "defense" && (
+        (state.nominated && state.nominated.id === player.id)
+        || state.ballotTargetId === player.id
+      );
+      seat.classList.toggle("nominated", Boolean(nominated));
       seat.classList.toggle("selectable", selectable);
       seat.classList.toggle("selected", selected);
       seat.disabled = !selectable;
@@ -1484,11 +1529,23 @@ state.revealInfo = info;
       item.classList.add("whisper");
       item.classList.add(selfWhisper ? "whisper-self" : "whisper-pair");
     }
+    if (/被提名|先听.{0,4}自辩/u.test(text)) {
+      item.classList.add("defense-line");
+    }
+    if (/被投票处决|平票|门槛|加赛|处决/u.test(text)) {
+      item.classList.add("vote-line");
+    }
     if (freshIndex >= 0) {
       item.classList.add("log-appear");
       item.style.animationDelay = `${Math.min(freshIndex, 6) * 70}ms`;
     }
     const who = node("p", "log-who", isYou ? "你" : entry.speaker_name);
+    if (!narration) {
+      item.dataset.speaker = String(entry.speaker_id || "");
+      const dot = node("span", "log-dot");
+      dot.dataset.speaker = String(entry.speaker_id || "");
+      who.prepend(dot);
+    }
     if (whisper) {
       who.append(node("span", "log-whisper-tag", selfWhisper ? "你的私谈" : "廊下"));
     }
@@ -2014,6 +2071,12 @@ state.revealInfo = info;
     const box = $("night-transition");
     if (!box) {
       return;
+    }
+    const stage = $("table-stage");
+    if (stage) {
+      const rect = stage.getBoundingClientRect();
+      const shift = rect.left + rect.width / 2 - window.innerWidth / 2;
+      box.style.setProperty("--dawn-shift", `${Math.round(shift)}px`);
     }
     window.clearTimeout(state.nightTransitionTimer);
     $("night-transition-title").textContent = title;
@@ -3998,10 +4061,16 @@ state.revealInfo = info;
       }
       const matched = subjects.find((name) => name && note.startsWith(name));
       if (matched) {
-        note = note.slice(matched.length)
-          .replace(/^\s*(?:被(?:投票)?处决|夜里|天亮时|死在|没有下楼)[，,]?\s*/u, "")
-          .replace(/^[；;]\s*/u, "")
-          .trim();
+        const deathPrefix = new RegExp(
+          `^${matched.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:被(?:投票)?处决|夜里|天亮时|死在|没有下楼|倒下|被杀)`,
+          "u",
+        );
+        if (deathPrefix.test(note)) {
+          note = note.slice(matched.length)
+            .replace(/^\s*(?:被(?:投票)?处决|夜里|天亮时|死在|没有下楼|倒下|被杀)[，,]?\s*/u, "")
+            .replace(/^[；;]\s*/u, "")
+            .trim();
+        }
       }
       if (tie || /^(?:最高\s*\d+\s*票|平票|票数不够|无人被处决)/u.test(note)
         || /^\d+\s*\/\s*\d+\s*票过门槛/u.test(note)) {
