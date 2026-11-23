@@ -68,7 +68,7 @@ class BloodYouPublic(APIModel):
 
     id: str
     name: str
-    role: Literal["villager", "murderer"]
+    role: Literal["villager", "murderer", "minion"]
     private_info: list[str]
     teammates: list[str]
 
@@ -82,11 +82,28 @@ class BloodLogEntryPublic(APIModel):
     text: str
 
 
+class BloodSuccessionPublic(APIModel):
+    """一次恶魔传位。"""
+
+    day: int
+    from_id: str
+    from_name: str
+    to_id: str
+    to_name: str
+
+
 class BloodRevealPublic(APIModel):
-    """终局揭晓的凶手身份。"""
+    """终局揭晓：最初的恶魔、爪牙、传位链与中毒者。"""
 
     murderer_id: str
     murderer_name: str
+    final_murderer_id: str = ""
+    final_murderer_name: str = ""
+    minion_id: str = ""
+    minion_name: str = ""
+    poisoned_id: str = ""
+    poisoned_name: str = ""
+    succession: list[BloodSuccessionPublic] = Field(default_factory=list)
 
 
 class BloodRunoffCandidatePublic(APIModel):
@@ -742,6 +759,22 @@ def _blood_reveal_public(
     return BloodRevealPublic(
         murderer_id=reveal.murderer_id,
         murderer_name=reveal.murderer_name,
+        final_murderer_id=reveal.final_murderer_id,
+        final_murderer_name=reveal.final_murderer_name,
+        minion_id=reveal.minion_id,
+        minion_name=reveal.minion_name,
+        poisoned_id=reveal.poisoned_id,
+        poisoned_name=reveal.poisoned_name,
+        succession=[
+            BloodSuccessionPublic(
+                day=int(item.get("day", 0)),
+                from_id=str(item.get("from_id", "")),
+                from_name=str(item.get("from_name", "")),
+                to_id=str(item.get("to_id", "")),
+                to_name=str(item.get("to_name", "")),
+            )
+            for item in reveal.succession
+        ],
     )
 
 

@@ -44,6 +44,8 @@ SYSTEM_PROMPT: str = (
     "不得改口、不得新增未发生的地点、时辰、人物或动作。\n"
     "11. 投票理由只能引用被投对象当天公开说过的原话；"
     "不得把自己的推测或别人转述当成对方的原话。\n"
+    "12. 若提示词告诉你某人是你的同伴，你要在公开场合替他打掩护，"
+    "但绝不能承认你们是一伙的；也不要与别人复述同一条私密片段。\n"
 )
 
 CONFIDE_SYSTEM_PROMPT: str = (
@@ -177,10 +179,29 @@ def build_prompt(
     ]
     if player.role == "murderer":
         lines.append(
-            "你心里清楚：昨晚动手的人就是你。把话头引开，但绝不能承认。"
+            "你心里清楚：你是这局藏起来的恶魔，昨晚动手的人就是你。"
+            "把话头引开，但绝不能承认。"
+        )
+    elif player.role == "minion":
+        lines.append(
+            "你心里清楚：你是恶魔的爪牙，夜里不动手，白天的任务是替恶魔挡刀、"
+            "把怀疑引到别人身上。绝不能承认自己的身份。"
         )
     else:
-        lines.append("你不是凶手，但你也不知道是谁。")
+        lines.append("你是镇民，不知道谁下了手，只能凭自己知道的片段判断。")
+    teammates = [
+        other
+        for other in state.players
+        if other.id != player.id
+        and other.alive
+        and other.role in ("murderer", "minion")
+    ]
+    if player.role in ("murderer", "minion") and teammates:
+        lines.append(
+            "你知道 "
+            + "、".join(f"{other.name}（{other.public}）" for other in teammates)
+            + " 是你的同伴，要替他打掩护，但公开场合绝不能承认这层关系。"
+        )
     lines.append("你私下知道的事：")
     lines.extend(f"- {text}" for text in player.private_info)
     others = [
@@ -269,7 +290,8 @@ def build_prompt(
     fact = pending.get(player.id) if pending else None
     if fact:
         lines.append(
-            "你可以暗示的一条私密片段（只能用自己话带出，禁止逐字复述）：" + fact
+            "今天你只围绕这一条私密片段开口，用自己的话带出，"
+            "不要逐字复述，也不要跟着别人重复同一件事：" + fact
         )
     lines.append("现在轮到你开口，说一到两句，别重复寒暄。")
     return SYSTEM_PROMPT, "\n".join(lines)

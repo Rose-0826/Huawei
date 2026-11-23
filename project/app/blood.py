@@ -29,11 +29,15 @@ from app.config import (
     BLOOD_MAX_SPEAK_PER_DAY,
     BLOOD_MAX_SUSPICION,
     BLOOD_MEMORY_MARKERS,
+    BLOOD_MINION_COUNT,
+    BLOOD_POISON_FALLBACK_TEXT,
+    BLOOD_POISON_TIME_SHIFT_MINUTES,
     BLOOD_PRIVATE_FACTS_MAX,
     BLOOD_PRIVATE_FACTS_MIN,
     BLOOD_PRIVATE_MAX_SENSITIVITY,
     BLOOD_SECRET_CLAIM_TERMS,
     BLOOD_SECRET_IDENTITY_TERMS,
+    BLOOD_SUCCESSOR_PUBLIC_TEXT,
     BLOOD_SUSPICION_FACT,
     BLOOD_SUSPICION_MENTION,
     BLOOD_SUSPICION_MURDERER,
@@ -43,6 +47,9 @@ from app.config import (
     BLOOD_VOTE_REASON_MAX_CHARS,
     BLOOD_VOTE_REASON_MIN_QUOTE_CHARS,
     BLOOD_VOTE_REASON_QUOTE_CHARS,
+    BLOOD_WHISPER_PUBLIC_TEMPLATE,
+    BLOOD_WHISPER_SUSPICION_DELTA,
+    BLOOD_WHISPER_TRUST_DELTA,
     CONFIDE_REPLY_MAX_CHARS,
     CONFIDE_SUSPICION_ACCEPT,
     CONFIDE_SUSPICION_EVADE,
@@ -65,7 +72,8 @@ from app.models import Script
 
 logger = logging.getLogger(__name__)
 
-RoleKind = Literal["villager", "murderer"]
+RoleKind = Literal["villager", "murderer", "minion"]
+EvilRole = Literal["murderer", "minion"]
 Phase = Literal[
     "discussion", "defense", "runoff", "night", "spectating", "ended"
 ]
@@ -252,9 +260,11 @@ UNKNOWN_PLACE_TERMS: tuple[str, ...] = (
     "偏院",
 )
 FEMALE_IDS: frozenset[str] = frozenset({"p1", "p3"})
+EVIL_ROLES: frozenset[str] = frozenset({"murderer", "minion"})
 TIME_MENTION_PATTERN = re.compile(
     r"\d{1,2}[:：]\d{2}|[零一二三四五六七八九十两]{1,3}点(?:半)?|二更|三更|后半夜|天亮前"
 )
+TIME_POISON_PATTERN = re.compile(r"(\d{1,2})[:：](\d{2})")
 PLACE_EVIDENCE_TERMS: tuple[str, ...] = (
     "书房",
     "楼梯口",
@@ -327,6 +337,9 @@ class BloodPlayer:
     released_today: int = 0
     trust: float = CONFIDE_TRUST_START
     follow_prob: float = 0.0
+    poisoned: bool = False
+    pact_ids: set[str] = field(default_factory=set)
+    trust_map: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -392,6 +405,12 @@ class BloodState:
     stalemate_count: int = 0
     ghost_vote_used: bool = False
     pending_night: bool = False
+    minion_id: str = ""
+    original_murderer_id: str = ""
+    succession: list[dict[str, object]] = field(default_factory=list)
+    poisoned_id: str | None = None
+    focus_by_day: dict[int, dict[str, str]] = field(default_factory=dict)
+    whisper_days: dict[int, list[str]] = field(default_factory=dict)
     rng: random.Random = field(default_factory=random.Random, repr=False)
 
 
@@ -427,10 +446,17 @@ class YouView:
 
 @dataclass(frozen=True)
 class RevealView:
-    """终局揭晓的凶手身份。"""
+    """终局揭晓：凶手、爪牙、传位链与中毒者。"""
 
     murderer_id: str
     murderer_name: str
+    final_murderer_id: str = ""
+    final_murderer_name: str = ""
+    minion_id: str = ""
+    minion_name: str = ""
+    poisoned_id: str = ""
+    poisoned_name: str = ""
+    succession: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -660,10 +686,20 @@ def _create_state(
         script=script,
         players=players,
         murderer_id=murderer.id,
+        original_murderer_id=murderer.id,
         rng=rng,
     )
     for player in players:
         player.private_info = _private_info(script, player, rng)
+    rest = [player for player in players if player.id != murderer.id]
+    minion = rest[rng.randrange(len(rest))]
+    minion.role = "minion"
+    state.minion_id = minion.id
+    if minion.is_you:
+        minion.private_info[-1] = (
+            f"只有你知道：{murderer.name} 是昨夜动手的恶魔，你们是一伙的。"
+        )
+    _apply_poison(state, rng)
     _init_suspicion(state, rng)
     state.message = "风雪封路，六个人围坐在灯下。昨夜有人动了手。"
     _log(state, {"type": "start", "day": 1, "players": len(players)})
@@ -732,6 +768,85 @@ def _you_witness_line(script: Script, rng: random.Random) -> str:
     return f"你记得那晚的一条：{rng.choice(pool).text}"
 
 
+def _apply_poison(state: BloodState, rng: random.Random) -> None:
+    """随机给一名镇民下药，把其私有信息里一条换成错误时间或人物。"""
+    candidates = [
+        player
+        for player in state.players
+        if player.role == "villager" and not player.is_you and player.private_info
+    ]
+    if not candidates:
+        return
+    victim = rng.choice(candidates)
+    index = _poison_index(state, victim, rng)
+    original = victim.private_info[index]
+    victim.private_info[index] = _poison_text(state, victim, original, rng)
+    victim.poisoned = True
+    state.poisoned_id = victim.id
+
+
+def _poison_index(
+    state: BloodState,
+    victim: BloodPlayer,
+    rng: random.Random,
+) -> int:
+    """优先挑含具体时刻或他人姓名的条目来改写。"""
+    timed = [
+        index
+        for index, text in enumerate(victim.private_info)
+        if TIME_POISON_PATTERN.search(text)
+    ]
+    named = [
+        index
+        for index, text in enumerate(victim.private_info)
+        if any(
+            other.id != victim.id and other.name in text
+            for other in state.players
+        )
+    ]
+    pool = timed or named or list(range(len(victim.private_info)))
+    return rng.choice(pool)
+
+
+def _poison_text(
+    state: BloodState,
+    victim: BloodPlayer,
+    text: str,
+    rng: random.Random,
+) -> str:
+    """把一条私有信息改写成错误的时辰、人物或地点，且绝不与原文相同。"""
+    match = TIME_POISON_PATTERN.search(text)
+    if match is not None:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        total = (
+            hour * 60 + minute + BLOOD_POISON_TIME_SHIFT_MINUTES
+        ) % (24 * 60)
+        wrong = f"{total // 60:02d}:{total % 60:02d}"
+        return f"{text[: match.start()]}{wrong}{text[match.end() :]}"
+    mentioned = [
+        player
+        for player in state.players
+        if player.id != victim.id and player.name in text
+    ]
+    if mentioned:
+        swapped = mentioned[0]
+        pool = [
+            player.name
+            for player in state.players
+            if player.id not in (victim.id, swapped.id)
+            and player.name not in text
+        ]
+        if pool:
+            return text.replace(swapped.name, rng.choice(pool), 1)
+    places = [term for term in PLACE_EVIDENCE_TERMS if term in text]
+    if places:
+        pool = [term for term in PLACE_EVIDENCE_TERMS if term not in text]
+        if pool:
+            return text.replace(places[0], rng.choice(pool), 1)
+    return BLOOD_POISON_FALLBACK_TEXT
+
+
 def _init_suspicion(state: BloodState, rng: random.Random) -> None:
     for player in state.players:
         if player.is_you:
@@ -745,7 +860,7 @@ def _init_suspicion(state: BloodState, rng: random.Random) -> None:
             )
             if _mentioned_in_private(player, other):
                 value += BLOOD_SUSPICION_FACT
-            if player.role == "murderer" and other.role == "villager":
+            if player.role in EVIL_ROLES and other.role == "villager":
                 value += BLOOD_SUSPICION_MURDERER
             player.suspicion[other.id] = _clip(value)
 
@@ -787,7 +902,7 @@ def _release_fact(
     player: BloodPlayer,
     allow: int,
 ) -> str | None:
-    """按当天的条数上限，取一条尚未公开的私密信息备说。"""
+    """按当天的条数上限，取一条尚未公开、且当天尽量不与他人重样的私密信息。"""
     if player.is_you:
         return None
     if player.released_day != state.day:
@@ -795,11 +910,14 @@ def _release_fact(
         player.released_today = 0
     if player.released_today >= allow:
         return None
-    for index, text in enumerate(player.private_info):
+    used_today = set(state.focus_by_day.get(state.day, {}).values())
+    for index in _focus_order(state, player, used_today):
         if index in player.released:
             continue
         player.released.add(index)
         player.released_today += 1
+        text = player.private_info[index]
+        state.focus_by_day.setdefault(state.day, {})[player.id] = text
         _log(
             state,
             {
@@ -807,10 +925,29 @@ def _release_fact(
                 "day": state.day,
                 "speaker": player.id,
                 "index": index,
+                "focus": text,
             },
         )
         return text
     return None
+
+
+def _focus_order(
+    state: BloodState,
+    player: BloodPlayer,
+    used_today: set[str],
+) -> list[int]:
+    """按天与玩家偏移轮换私有信息，并把当天已被别人用过的条目排到后面。"""
+    count = len(player.private_info)
+    if count == 0:
+        return []
+    offset = (state.day + int(player.id[1:])) % count
+    order = [(offset + step) % count for step in range(count)]
+    fresh = [
+        index for index in order if player.private_info[index] not in used_today
+    ]
+    stale = [index for index in order if index not in fresh]
+    return fresh + stale
 
 
 def _mentioned_agents(
@@ -844,7 +981,9 @@ def _top_suspicion_target(
     state: BloodState,
     player: BloodPlayer,
     allowed_ids: set[str] | None = None,
+    avoid_pacts: bool = False,
 ) -> str | None:
+    """取最怀疑的存活者；串供结盟时先避开同伴互咬。"""
     candidates = [
         other
         for other in state.players
@@ -854,6 +993,12 @@ def _top_suspicion_target(
     ]
     if not candidates:
         return None
+    if avoid_pacts and player.pact_ids:
+        loyal = [
+            other for other in candidates if other.id not in player.pact_ids
+        ]
+        if loyal:
+            candidates = loyal
     best = max(candidates, key=lambda p: player.suspicion.get(p.id, 0.0))
     return best.id
 
@@ -1141,6 +1286,46 @@ def _consume_leak(state: BloodState, player: BloodPlayer) -> str:
     return f"我听{YOU_NAME}私下说「{quote}」，我没应。"
 
 
+def _maybe_whisper(state: BloodState) -> None:
+    """每天讨论阶段随机两名 agent 私下串供：公开只留一句旁白。"""
+    if state.day in state.whisper_days:
+        return
+    agents = _alive_agents(state)
+    if len(agents) < 2:
+        return
+    ordered = sorted(agents, key=lambda player: player.id)
+    index = state.day % len(ordered)
+    first = ordered[index]
+    second = ordered[(index + 1) % len(ordered)]
+    first.pact_ids.add(second.id)
+    second.pact_ids.add(first.id)
+    first.trust_map[second.id] = _clip_trust(
+        first.trust_map.get(second.id, CONFIDE_TRUST_START)
+        + BLOOD_WHISPER_TRUST_DELTA
+    )
+    second.trust_map[first.id] = _clip_trust(
+        second.trust_map.get(first.id, CONFIDE_TRUST_START)
+        + BLOOD_WHISPER_TRUST_DELTA
+    )
+    _adjust_suspicion(first, second.id, BLOOD_WHISPER_SUSPICION_DELTA)
+    _adjust_suspicion(second, first.id, BLOOD_WHISPER_SUSPICION_DELTA)
+    line = BLOOD_WHISPER_PUBLIC_TEMPLATE.format(
+        a=first.name,
+        b=second.name,
+    )
+    state.whisper_days[state.day] = [first.id, second.id]
+    _say(state, "system", "旁白", line)
+    _log(
+        state,
+        {
+            "type": "whisper",
+            "day": state.day,
+            "pair": [first.id, second.id],
+            "trust": round(BLOOD_WHISPER_TRUST_DELTA, 2),
+        },
+    )
+
+
 def _agent_speak(
     state: BloodState,
     player: BloodPlayer,
@@ -1216,6 +1401,7 @@ def discuss(
     if state.discussed:
         return TalkOutcome(ok=False, error="discuss_used", phase=state.phase)
     state.discussed = True
+    _maybe_whisper(state)
     replies = tuple(
         _agent_speak(state, player, reply_fn) for player in _alive_agents(state)
     )
@@ -1330,6 +1516,53 @@ def _judge_alive_ids(
     if len(alive_ids) <= 2:
         return "murderer"
     return None
+
+
+def _succeed_demon(state: BloodState) -> bool:
+    """恶魔已死且仍有存活爪牙时，由爪牙接任新恶魔并继续游戏。"""
+    demon = _player(state, state.murderer_id)
+    if demon is not None and demon.alive:
+        return False
+    heir = next(
+        (
+            player
+            for player in state.players
+            if player.alive and player.role == "minion"
+        ),
+        None,
+    )
+    if heir is None:
+        return False
+    heir.role = "murderer"
+    from_id = demon.id if demon is not None else ""
+    from_name = demon.name if demon is not None else "原恶魔"
+    state.succession.append(
+        {
+            "day": state.day,
+            "from_id": from_id,
+            "from_name": from_name,
+            "to_id": heir.id,
+            "to_name": heir.name,
+        }
+    )
+    state.murderer_id = heir.id
+    _log(
+        state,
+        {
+            "type": "succession",
+            "day": state.day,
+            "from": from_id,
+            "to": heir.id,
+        },
+    )
+    _say(state, "system", "旁白", BLOOD_SUCCESSOR_PUBLIC_TEXT)
+    return True
+
+
+def _settle_win(state: BloodState) -> Winner | None:
+    """先处理恶魔传位，再按当前在场阵营判定胜负。"""
+    _succeed_demon(state)
+    return _judge(state)
 
 
 def _judge(state: BloodState) -> Winner | None:
@@ -1521,20 +1754,15 @@ def _sim_tally(
     ]
     tally: Counter[str] = Counter()
     for voter in voters:
-        candidates = [
-            player
-            for player in state.players
-            if player.alive
-            and player.id in alive_ids
-            and player.id != voter.id
-        ]
-        if not candidates:
-            continue
-        target = max(
-            candidates,
-            key=lambda player: voter.suspicion.get(player.id, 0.0),
+        target_id = _top_suspicion_target(
+            state,
+            voter,
+            alive_ids,
+            avoid_pacts=True,
         )
-        tally[target.id] += 1
+        if target_id is None:
+            continue
+        tally[target_id] += 1
     return tally
 
 
@@ -1544,27 +1772,7 @@ def _sim_vote(
     stalemate_count: int = 0,
 ) -> BloodPlayer | None:
     """模拟一轮 agent 投票：各投最怀疑的存活者，严格过半才处决。"""
-    voters = [
-        player
-        for player in state.players
-        if player.alive and not player.is_you and player.id in alive_ids
-    ]
-    tally: Counter[str] = Counter()
-    for voter in voters:
-        candidates = [
-            player
-            for player in state.players
-            if player.alive
-            and player.id in alive_ids
-            and player.id != voter.id
-        ]
-        if not candidates:
-            continue
-        target = max(
-            candidates,
-            key=lambda player: voter.suspicion.get(player.id, 0.0),
-        )
-        tally[target.id] += 1
+    tally = _sim_tally(state, alive_ids)
     threshold = _vote_threshold(len(alive_ids), stalemate_count)
     if not tally:
         return None
@@ -1586,7 +1794,10 @@ def _sim_kill(
     candidates = [
         player
         for player in state.players
-        if player.alive and player.id in alive_ids and player.id != murderer.id
+        if player.alive
+        and player.id in alive_ids
+        and player.id != murderer.id
+        and player.role not in EVIL_ROLES
     ]
     if not candidates:
         return None
@@ -1598,27 +1809,27 @@ def _sim_kill(
 
 def _simulate_aftermath(state: BloodState) -> Winner | None:
     """真人出局后，用纯规则推演剩余处决与夜杀，逐日补进卷宗。"""
-    roles = {player.id: player.role for player in state.players}
-    alive_ids = {player.id for player in state.players if player.alive}
-    winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
+    winner = _settle_win(state)
     day = state.day + 1
     stale = 0
     while winner is None and day <= BLOOD_MAX_DAYS:
+        alive_ids = {player.id for player in state.players if player.alive}
         tally = _sim_tally(state, alive_ids)
         threshold = _vote_threshold(len(alive_ids), stale)
         executed_now = _sim_vote(state, alive_ids, stale)
         stalemate = executed_now is None
         if executed_now is not None:
             executed_now.alive = False
-            alive_ids.discard(executed_now.id)
-        winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
+        winner = _settle_win(state)
         killed_now = None
         if winner is None:
+            alive_ids = {
+                player.id for player in state.players if player.alive
+            }
             killed_now = _sim_kill(state, alive_ids)
             if killed_now is not None:
                 killed_now.alive = False
-                alive_ids.discard(killed_now.id)
-                winner = _judge_alive_ids(roles, alive_ids, state.murderer_id)
+                winner = _settle_win(state)
         _push_history(
             state,
             _sim_day_entry(
@@ -1694,7 +1905,9 @@ def _system_kill_target(state: BloodState) -> BloodPlayer | None:
     candidates = [
         player
         for player in state.players
-        if player.alive and player.id != murderer.id
+        if player.alive
+        and player.id != murderer.id
+        and player.role not in EVIL_ROLES
     ]
     if not candidates:
         return None
@@ -1949,7 +2162,7 @@ def _agent_vote(
     if target is None:
         target = _player(
             state,
-            _top_suspicion_target(state, agent, allowed_ids),
+            _top_suspicion_target(state, agent, allowed_ids, avoid_pacts=True),
         )
     if target is None:
         return None
@@ -2229,7 +2442,7 @@ def vote(
         state.stalemate_count = 0
     state.runoff = False
     state.runoff_candidates = []
-    winner = _judge(state)
+    winner = _settle_win(state)
     if winner is not None:
         _declare_winner(state, winner, _win_text(winner))
     elif state.day >= BLOOD_MAX_DAYS:
@@ -2282,6 +2495,8 @@ def night(
         )
     murderer = _player(state, state.murderer_id)
     if murderer is None or not murderer.alive:
+        _settle_win(state)
+        murderer = _player(state, state.murderer_id)
         _record_night(state, None)
         _log(state, {"type": "night", "day": state.day, "killed": None})
         _declare_winner(
@@ -2320,7 +2535,7 @@ def night(
                 ok=False, error="target_dead", day=state.day,
                 phase=state.phase,
             )
-        if victim.is_you or victim.role == "murderer":
+        if victim.is_you or victim.role in EVIL_ROLES:
             return NightOutcome(
                 ok=False, error="target_invalid", day=state.day,
                 phase=state.phase,
@@ -2359,7 +2574,7 @@ def night(
             "killed": victim.id if victim is not None else None,
         },
     )
-    winner = _judge(state)
+    winner = _settle_win(state)
     if victim is not None and victim.is_you:
         if winner is not None:
             _declare_winner(state, winner, _win_text(winner))
@@ -2794,6 +3009,7 @@ def _auto_open_day(state: BloodState) -> None:
     """观战推演：agent 完成讨论与提名，停在投票阶段等亡者票。"""
     state.phase = "discussion"
     if not state.discussed:
+        _maybe_whisper(state)
         speakers: list[str] = []
         for player in _alive_agents(state):
             text = _vague_agent_line(player)
@@ -2942,7 +3158,7 @@ def _auto_settle_vote(
         state.stalemate_count = 0
     state.runoff = False
     state.runoff_candidates = []
-    winner = _judge(state)
+    winner = _settle_win(state)
     if winner is not None:
         _declare_winner(state, winner, _win_text(winner))
     elif state.day >= BLOOD_MAX_DAYS:
@@ -2962,6 +3178,8 @@ def _advance_night(state: BloodState) -> BloodPlayer | None:
     state.phase = "night"
     murderer = _player(state, state.murderer_id)
     if murderer is None or not murderer.alive:
+        _settle_win(state)
+        murderer = _player(state, state.murderer_id)
         _record_night(state, None)
         _log(state, {"type": "night", "day": state.day, "killed": None})
         _declare_winner(
@@ -2991,7 +3209,7 @@ def _advance_night(state: BloodState) -> BloodPlayer | None:
             "killed": victim.id,
         },
     )
-    winner = _judge(state)
+    winner = _settle_win(state)
     if winner is not None:
         _declare_winner(state, winner, _win_text(winner))
     elif state.day >= BLOOD_MAX_DAYS:
@@ -3043,16 +3261,41 @@ def advance(store: BloodStore, game_id: str) -> AdvanceOutcome:
 
 
 def _reveal_of(state: BloodState) -> RevealView | None:
-    """终局时返回凶手揭晓，未结束时返回空。"""
-
+    """终局时返回最初的恶魔、爪牙、传位链与中毒者。"""
     if state.phase != "ended":
         return None
-    murderer = _player(state, state.murderer_id)
-    if murderer is None:
+    original = _player(
+        state,
+        state.original_murderer_id or state.murderer_id,
+    )
+    current = _player(state, state.murderer_id)
+    if original is None:
         return None
+    minion = _player(state, state.minion_id)
+    poisoned = _player(state, state.poisoned_id)
     return RevealView(
-        murderer_id=murderer.id,
-        murderer_name=murderer.name,
+        murderer_id=original.id,
+        murderer_name=original.name,
+        final_murderer_id=current.id if current is not None else original.id,
+        final_murderer_name=(
+            current.name if current is not None else original.name
+        ),
+        minion_id=minion.id if minion is not None else "",
+        minion_name=minion.name if minion is not None else "",
+        poisoned_id=poisoned.id if poisoned is not None else "",
+        poisoned_name=poisoned.name if poisoned is not None else "",
+        succession=tuple(dict(item) for item in state.succession),
+    )
+
+
+def _teammates_of(state: BloodState, you: BloodPlayer) -> tuple[str, ...]:
+    """只有邪恶能看到同伴姓名，好人一律为空。"""
+    if you.role not in EVIL_ROLES:
+        return ()
+    return tuple(
+        player.name
+        for player in state.players
+        if player.id != you.id and player.role in EVIL_ROLES
     )
 
 
@@ -3087,7 +3330,7 @@ def build_view(state: BloodState) -> BloodView:
             name=you.name,
             role=you.role,
             private_info=tuple(you.private_info),
-            teammates=(),
+            teammates=_teammates_of(state, you),
         ),
         public_log=tuple(state.public_log),
         dead=tuple(

@@ -103,3 +103,19 @@ BLOOD_KNOWN_PERSON_TERMS: Final[tuple[str, ...]] = (
 )
 BLOOD_HEARSAY_PREFIX: Final[str] = "听旅客说，"
 BLOOD_VOTE_REASON_QUOTE_CHARS: Final[int] = 12
+# 第八轮：爪牙传位
+BLOOD_MINION_COUNT: Final[int] = 1
+BLOOD_SUCCESSOR_PUBLIC_TEXT: Final[str] = (
+    "死了一个人，可这一局还没有完，有人接过了这摊事。"
+)
+
+# 第八轮：毒/醉假线索（每局随机 1 名镇民被下药）
+BLOOD_POISON_TIME_SHIFT_MINUTES: Final[int] = 40
+BLOOD_POISON_FALLBACK_TEXT: Final[str] = (
+    "你只记得那晚的动静比后来众人说的早了小半个时辰。"
+)
+
+# 第八轮：agent 间低声串供
+BLOOD_WHISPER_TRUST_DELTA: Final[float] = 12.0
+BLOOD_WHISPER_SUSPICION_DELTA: Final[float] = -0.08
+BLOOD_WHISPER_PUBLIC_TEMPLATE: Final[str] = "{a} 和 {b} 在廊下低声说了几句。"
