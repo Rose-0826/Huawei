@@ -7,6 +7,8 @@ import random
 import re
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from copy import copy
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
@@ -2231,14 +2233,13 @@ def _follow_target(
     return candidate
 
 
-def _agent_vote(
+def _agent_vote_target(
     state: BloodState,
     agent: BloodPlayer,
-    reply_fn: ReplyFn,
     follow_id: str | None = None,
     allowed_ids: set[str] | None = None,
-) -> VoteResult | None:
-    """agent 投给最怀疑的人；密谈结盟时按 follow_prob 跟随一次。"""
+) -> BloodPlayer | None:
+    """选出投票目标；爪牙不会主动投给仍存活的恶魔。"""
     allowed = set(allowed_ids) if allowed_ids is not None else None
     if agent.role == "minion":
         demon = _player(state, state.murderer_id)
@@ -2252,29 +2253,50 @@ def _agent_vote(
             state,
             _top_suspicion_target(state, agent, allowed, avoid_pacts=True),
         )
-    if target is None:
-        return None
-    state.pending_hint = "vote_reason"
-    state.pending_target_id = target.id
+    return target
+
+
+def _agent_vote_reason(
+    state: BloodState,
+    agent: BloodPlayer,
+    target: BloodPlayer,
+    reply_fn: ReplyFn,
+) -> VoteResult:
+    """为已选定的目标生成一条投票理由，使用独立状态副本供并发调用。"""
+    local = copy(state)
+    local.pending_hint = "vote_reason"
+    local.pending_target_id = target.id
     reason = ""
     try:
-        raw = reply_fn(state, agent)
+        raw = reply_fn(local, agent)
         reason = _clip_sentence(raw, BLOOD_VOTE_REASON_MAX_CHARS)
     except Exception:
         logger.warning("投票理由生成失败：%s", agent.id, exc_info=True)
-    finally:
-        state.pending_hint = ""
-        state.pending_target_id = None
     reason = _aligned_reason(state, agent, target, reason)
+    return VoteResult(agent.id, agent.name, target.id, target.name, reason)
+
+
+def _agent_vote(
+    state: BloodState,
+    agent: BloodPlayer,
+    reply_fn: ReplyFn,
+    follow_id: str | None = None,
+    allowed_ids: set[str] | None = None,
+) -> VoteResult | None:
+    """agent 投给最怀疑的人；密谈结盟时按 follow_prob 跟随一次。"""
+    target = _agent_vote_target(state, agent, follow_id, allowed_ids)
+    if target is None:
+        return None
+    result = _agent_vote_reason(state, agent, target, reply_fn)
     state.vote_reason_log.append(
         {
             "day": state.day,
             "voter_id": agent.id,
             "target_id": target.id,
-            "reason": reason,
+            "reason": result.reason,
         }
     )
-    return VoteResult(agent.id, agent.name, target.id, target.name, reason)
+    return result
 
 
 def _resolve_votes(
@@ -2472,11 +2494,34 @@ def vote(
         )
     alive_before = sum(1 for player in state.players if player.alive)
     base_threshold = alive_before // 2 + 1
+    plans: list[tuple[BloodPlayer, BloodPlayer]] = []
     for agent in _alive_agents(state):
         follow_id = state.confide_intents.get(agent.id, target.id)
-        agent_vote = _agent_vote(state, agent, reply_fn, follow_id, allowed)
-        if agent_vote is not None:
-            votes.append(agent_vote)
+        planned = _agent_vote_target(state, agent, follow_id, allowed)
+        if planned is not None:
+            plans.append((agent, planned))
+    if len(plans) > 1:
+        with ThreadPoolExecutor(max_workers=min(5, len(plans))) as pool:
+            futures = [
+                pool.submit(_agent_vote_reason, state, agent, planned, reply_fn)
+                for agent, planned in plans
+            ]
+            results = [future.result() for future in futures]
+    else:
+        results = [
+            _agent_vote_reason(state, agent, planned, reply_fn)
+            for agent, planned in plans
+        ]
+    for (agent, target), result in zip(plans, results):
+        state.vote_reason_log.append(
+            {
+                "day": state.day,
+                "voter_id": agent.id,
+                "target_id": target.id,
+                "reason": result.reason,
+            }
+        )
+        votes.append(result)
     tally, threshold, executed, leaders = _resolve_votes(state, votes)
     relaxed = threshold < base_threshold
     if executed is None and len(leaders) > 1 and not was_runoff:
