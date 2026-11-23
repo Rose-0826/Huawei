@@ -54,7 +54,7 @@
       <section class="hall" aria-label="旅馆大厅圆桌">
         <div class="hall-bar">
           <p id="hall-hint" class="hall-hint" aria-live="polite">雪落在大厅的窗上，六个人围桌坐下。</p>
-          <p class="hall-rule">六人围桌 · 一人说谎</p>
+          <p class="hall-rule">六人围桌 · 恶魔藏在我们中间</p>
         </div>
         <div id="table-stage" class="table-stage">
           <div class="table-surface" aria-hidden="true">
@@ -89,6 +89,8 @@
           </div>
           <p id="spectate-line" class="spectate-line">你已出局，观战中。</p>
           <p id="spectate-note" class="spectate-note"></p>
+          <div id="spectate-feed" class="spectate-feed" aria-live="polite"></div>
+          <p id="spectate-next" class="spectate-next"></p>
           <div class="spectate-actions">
             <button id="spectate-advance" class="primary-button" type="button">继续观战</button>
             <button id="spectate-log" class="ghost-button" type="button">翻卷宗</button>
@@ -227,6 +229,14 @@
     </footer>
   </div>
 
+  <div id="night-transition" class="night-transition hidden" role="status"
+       aria-live="polite" aria-hidden="true">
+    <div class="night-transition-inner">
+      <span id="night-transition-title" class="night-transition-title">熄灯了……</span>
+      <span id="night-transition-note" class="night-transition-note">雪光从窗缝里漏进来。</span>
+    </div>
+  </div>
+
   <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
 
   <section id="end-overlay" class="end-overlay hidden" role="dialog" aria-modal="true"
@@ -235,6 +245,7 @@
       <div id="end-portrait" class="end-portrait" aria-hidden="true"></div>
       <p id="end-kicker" class="kicker">DAWN · 结局</p>
       <h2 id="end-title">好人胜</h2>
+      <p id="end-you-result" class="end-you-result hidden">你赢了</p>
       <p id="end-subtitle" class="end-subtitle">雪停了。</p>
       <section id="end-aftermath" class="end-aftermath hidden" aria-label="逐日卷宗">
         <p class="end-aftermath-title">CASE NOTES · 逐日卷宗</p>
@@ -270,8 +281,12 @@
             <dd id="end-succession">无</dd>
           </div>
           <div>
-            <dt>毒醉</dt>
+            <dt>被下药者</dt>
             <dd id="end-poisoned">无</dd>
+          </div>
+          <div>
+            <dt>夜杀 / 处决</dt>
+            <dd id="end-killed">无</dd>
           </div>
         </dl>
       </section>
@@ -286,10 +301,10 @@
         </div>
       </form>
       <p id="end-message" class="end-message">凶手、死者，以及每一个没说出口的谎，都留在这一夜。</p>
-      <div class="end-actions">
-        <button id="end-log" class="ghost-button" type="button">查看本局记录</button>
-        <button id="end-restart" class="ghost-button" type="button">再来一局</button>
-      </div>
+    </div>
+    <div class="end-actions">
+      <button id="end-log" class="ghost-button" type="button">查看本局记录</button>
+      <button id="end-restart" class="ghost-button" type="button">再来一局</button>
     </div>
   </section>
 

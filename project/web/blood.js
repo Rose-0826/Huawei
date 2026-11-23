@@ -25,6 +25,16 @@
 
   const SUCCESSION_HINT = "邪恶没有结束，桌上还得再来一轮。";
 
+  const YOUR_RESULT_LABEL = {
+    win: "你赢了",
+    lose: "你输了",
+    draw: "平局",
+    late_good: "你出局后好人赢了",
+    late_evil: "你出局后凶手逃脱",
+  };
+
+  const LOG_PLAY_INTERVAL = 190;
+
   const WINNER_LABEL = {
     villagers: "好人胜",
     village: "好人胜",
@@ -143,6 +153,15 @@
     mockPoisonedId: "",
     mockWhisperDay: 0,
     successionPending: false,
+
+    logQueue: [],
+    logQueueTimer: 0,
+    spectateFeed: [],
+    spectateFeedDay: 0,
+    nightTransitionTimer: 0,
+    nightTransitionOpen: false,
+    endYourResult: "",
+    endKilledInfo: null,
   };
 
   function node(tag, className, text) {
@@ -557,6 +576,7 @@
       return;
     }
     const previous = state.game || {};
+    mergeNewEntries(data);
 
     if (options.reset) {
       $("discussion-list").textContent = "";
@@ -623,6 +643,13 @@ state.lastVotes = null;
 state.mockGhostVote = null;
       state.revealInfo = null;
       state.successionPending = false;
+      state.logQueue = [];
+      state.spectateFeed = [];
+      state.spectateFeedDay = 0;
+      state.endYourResult = "";
+      state.endKilledInfo = null;
+      window.clearTimeout(state.logQueueTimer);
+      state.logQueueTimer = 0;
 
       state.drawerTab = "public";
       clearBubble();
@@ -668,6 +695,12 @@ state.mockGhostVote = null;
       you_alive: data.you_alive !== undefined
         ? Boolean(data.you_alive)
         : (previous.you_alive === undefined ? null : previous.you_alive),
+      your_result: data.your_result !== undefined
+        ? String(data.your_result || "")
+        : (data.you_result !== undefined ? String(data.you_result || "") : (previous.your_result || "")),
+      you_win: typeof data.you_win === "boolean"
+        ? data.you_win
+        : (typeof previous.you_win === "boolean" ? previous.you_win : null),
     };
 
     if (!state.game.phase) {
@@ -1015,8 +1048,16 @@ state.mockGhostVote = null;
       final: { id: "", name: "" },
       minion: { id: "", name: "" },
       poisoned: { id: "", name: "" },
+      killed: { id: "", name: "" },
+      executed: { id: "", name: "" },
       succession: [],
     };
+    if (!info.killed) {
+      info.killed = { id: "", name: "" };
+    }
+    if (!info.executed) {
+      info.executed = { id: "", name: "" };
+    }
     const demon = firstPersonRef([
       ["murderer_id", source.murderer_id],
       ["murderer", source.murderer],
@@ -1062,6 +1103,27 @@ state.mockGhostVote = null;
     ]);
     if (poisoned.name || poisoned.id) {
       info.poisoned = poisoned;
+    }
+    const killed = firstPersonRef([
+      ["killed_id", source.killed_id],
+      ["killed", source.killed],
+      ["killed_name", source.killed_name],
+      ["night_killed_id", source.night_killed_id],
+      ["night_killed", source.night_killed],
+      ["night_killed_name", source.night_killed_name],
+      ["victim_id", source.victim_id],
+      ["victim_name", source.victim_name],
+    ]);
+    if (killed.name || killed.id) {
+      info.killed = killed;
+    }
+    const executed = firstPersonRef([
+      ["executed_id", source.executed_id],
+      ["executed", source.executed],
+      ["executed_name", source.executed_name],
+    ]);
+    if (executed.name || executed.id) {
+      info.executed = executed;
     }
     const successionRaw = source.succession !== undefined
       ? source.succession
@@ -1434,8 +1496,79 @@ state.revealInfo = info;
     return item;
   }
 
-  function appendLogEntries() {
+  function mergeNewEntries(data) {
+    if (!data || typeof data !== "object") {
+      return;
+    }
+    const raw = data.new_entries || data.newEntries || data.entries;
+    if (!Array.isArray(raw) || !raw.length) {
+      return;
+    }
+    const entries = normalizeLog(raw);
+    if (!entries.length) {
+      return;
+    }
+    const log = Array.isArray(data.public_log)
+      ? data.public_log
+      : ((state.game && Array.isArray(state.game.public_log)) ? state.game.public_log.slice() : []);
+    const seen = new Set(log.map((item) => `${String(item.speaker_id || "")}\u0000${String(item.text || item.content || "")}`));
+    let cursor = maxSeq(log);
+    for (const entry of entries) {
+      const key = `${entry.speaker_id}\u0000${entry.text}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      cursor += 1;
+      seen.add(key);
+      log.push({ ...entry, seq: cursor });
+    }
+    data.public_log = log;
+  }
+
+  function enqueueLogEntries(entries, fast = false) {
+    if (!entries || !entries.length) {
+      return;
+    }
+    state.logQueue.push(...entries.map((entry) => ({ entry, fast })));
+    flushLogQueue();
+  }
+
+  function flushLogQueue() {
+    if (state.logQueueTimer) {
+      return;
+    }
+    const item = state.logQueue.shift();
+    if (!item) {
+      return;
+    }
     const list = $("discussion-list");
+    const entry = item.entry;
+    $("discussion-empty").classList.add("hidden");
+    const day = Number(entry.day) || state.game && state.game.day || 1;
+    if (day !== state.lastDayShown) {
+      list.append(renderDayDivider(day));
+      state.lastDayShown = day;
+    }
+    list.append(renderEntry(entry, 0));
+    if (!state.userScrolled || state.stickForce) {
+      state.stickForce = false;
+      scrollDiscussionToBottom();
+    }
+    const narration = entry.speaker_id === "__narration"
+      || entry.speaker_id === "narrator"
+      || entry.speaker_name === "旁白";
+    if (!narration) {
+      showBubble(entry);
+    }
+    if (state.logQueue.length) {
+      state.logQueueTimer = window.setTimeout(() => {
+        state.logQueueTimer = 0;
+        flushLogQueue();
+      }, item.fast ? 30 : LOG_PLAY_INTERVAL);
+    }
+  }
+
+  function appendLogEntries() {
     const log = (state.game && state.game.public_log) || [];
     $("discussion-empty").classList.toggle("hidden", log.length > 0);
 
@@ -1444,27 +1577,10 @@ state.revealInfo = info;
       updateDiscussionCount();
       return;
     }
-    if (state.game.day !== state.lastDayShown) {
-      list.append(renderDayDivider(state.game.day));
-      state.lastDayShown = state.game.day;
-    }
-    fresh.forEach((entry, index) => {
-      list.append(renderEntry(entry, index));
-    });
+    const fast = state.lastSeq === 0;
     state.lastSeq = Math.max(state.lastSeq, maxSeq(fresh));
     updateDiscussionCount();
-
-    if (!state.userScrolled || state.stickForce) {
-      state.stickForce = false;
-      scrollDiscussionToBottom();
-    }
-
-    const lastSpeakable = [...fresh]
-      .reverse()
-      .find((entry) => entry.speaker_id !== "__narration" && entry.speaker_name !== "旁白");
-    if (lastSpeakable) {
-      showBubble(lastSpeakable);
-    }
+    enqueueLogEntries(fresh, fast);
   }
 
   function scrollDiscussionToBottom() {
@@ -1615,7 +1731,13 @@ state.revealInfo = info;
     if (!state.game || !state.voteResult) {
       return false;
     }
-    if (currentPhase() === "night" && !state.voteHeld && youAlive()) {
+    if (isFinished()) {
+      return false;
+    }
+    if (!youAlive()) {
+      return true;
+    }
+    if (currentPhase() === "night" && !state.voteHeld) {
       return false;
     }
     return true;
@@ -1626,10 +1748,11 @@ state.revealInfo = info;
     const result = state.voteResult;
     const discussion = board.closest(".discussion");
     const visible = voteBoardVisible();
+    const hideLog = visible && youAlive() && currentPhase() === "night" && !state.voteHeld;
     if (discussion) {
-      discussion.classList.toggle("voting", visible);
+      discussion.classList.toggle("voting", hideLog);
     }
-    document.body.dataset.voting = visible ? "1" : "0";
+    document.body.dataset.voting = hideLog ? "1" : "0";
     if (!state.game || !result || !visible) {
       board.classList.add("hidden");
       board.textContent = "";
@@ -1794,6 +1917,129 @@ state.revealInfo = info;
     return inVotePhase && ghostTargets().length > 0;
   }
 
+  function collectFreshEntries(data, sinceSeq) {
+    const log = normalizeLog((data && data.public_log) || []);
+    const fresh = log.filter((entry) => entry.seq > sinceSeq);
+    if (fresh.length) {
+      return fresh;
+    }
+    return normalizeLog((data && (data.new_entries || data.newEntries)) || []);
+  }
+
+  function recordSpectateEntries(entries) {
+    if (!Array.isArray(entries) || !entries.length) {
+      return;
+    }
+    for (const entry of entries) {
+      const exists = state.spectateFeed.some((item) => item.seq === entry.seq
+        && item.text === entry.text
+        && item.speaker_id === entry.speaker_id);
+      if (!exists) {
+        state.spectateFeed.push({ ...entry });
+      }
+    }
+    state.spectateFeed.sort((left, right) => (left.seq || 0) - (right.seq || 0));
+  }
+
+  function spectateNextHint() {
+    if (!state.game || isFinished()) {
+      return "";
+    }
+    const phase = normalizePhase(state.game.phase);
+    if (phase === "discussion") {
+      return "下一步：点「继续观战」，看这一天的讨论、提名与投票。";
+    }
+    if (phase === "nomination" || phase === "defense") {
+      return "下一步：桌上要落票了，点「继续观战」往下看。";
+    }
+    if (phase === "runoff") {
+      return "下一步：平票加赛，点「继续观战」看谁被推出去。";
+    }
+    if (phase === "night") {
+      return "下一步：天黑了，点「继续观战」等天亮。";
+    }
+    return "下一步：点「继续观战」推进这一段。";
+  }
+
+  function renderSpectateFeed() {
+    const host = $("spectate-feed");
+    if (!host) {
+      return;
+    }
+    if (!spectateVisible() || !state.spectateFeed.length) {
+      host.textContent = "";
+      host.dataset.sig = "";
+      host.classList.add("hidden");
+      return;
+    }
+    host.classList.remove("hidden");
+    const entries = state.spectateFeed;
+    const signature = entries.map((entry) => `${entry.seq}:${entry.day}:${entry.text.length}`).join("|");
+    if (host.dataset.sig === signature) {
+      return;
+    }
+    host.textContent = "";
+    const days = [...new Set(entries.map((entry) => Number(entry.day) || 1))].sort((a, b) => a - b);
+    const latest = days[days.length - 1];
+    for (const day of days) {
+      const rows = entries.filter((entry) => (Number(entry.day) || 1) === day);
+      const group = document.createElement("details");
+      group.className = "spectate-day-group";
+      group.open = day === latest;
+      const summary = document.createElement("summary");
+      summary.className = "spectate-day-summary";
+      summary.append(node("span", "sday", `第 ${day} 天`));
+      summary.append(node("span", "scount", `${rows.length} 条`));
+      group.append(summary);
+      const list = node("ol", "spectate-day-list");
+      for (const entry of rows) {
+        list.append(renderEntry(entry));
+      }
+      group.append(list);
+      host.append(group);
+    }
+    host.dataset.sig = signature;
+    const pinToBottom = () => {
+      host.scrollTop = host.scrollHeight;
+    };
+    window.requestAnimationFrame(() => {
+      pinToBottom();
+      window.requestAnimationFrame(pinToBottom);
+    });
+    window.setTimeout(pinToBottom, 90);
+    window.setTimeout(pinToBottom, 240);
+  }
+
+  function showNightTransition(title, note, holdMs = 0) {
+    const box = $("night-transition");
+    if (!box) {
+      return;
+    }
+    window.clearTimeout(state.nightTransitionTimer);
+    $("night-transition-title").textContent = title;
+    $("night-transition-note").textContent = note || "";
+    box.classList.remove("hidden");
+    box.setAttribute("aria-hidden", "false");
+    state.nightTransitionOpen = true;
+    if (holdMs > 0) {
+      state.nightTransitionTimer = window.setTimeout(() => {
+        hideNightTransition();
+      }, holdMs);
+    }
+  }
+
+  function hideNightTransition() {
+    const box = $("night-transition");
+    if (!box) {
+      return;
+    }
+    window.clearTimeout(state.nightTransitionTimer);
+    state.nightTransitionTimer = 0;
+    box.classList.add("hidden");
+    box.setAttribute("aria-hidden", "true");
+    state.nightTransitionOpen = false;
+  }
+
   function renderSpectate() {
     const panel = $("spectate-panel");
     if (!panel) {
@@ -1806,6 +2052,7 @@ state.revealInfo = info;
     }
     panel.classList.toggle("hidden", !visible);
     if (!visible) {
+      renderSpectateFeed();
       return;
     }
     $("spectate-day").textContent = `第 ${state.game.day} 天`;
@@ -1830,6 +2077,13 @@ state.revealInfo = info;
     }
     note.textContent = pieces.join(" · ");
     note.classList.toggle("hidden", !pieces.length);
+    renderSpectateFeed();
+    const next = $("spectate-next");
+    if (next) {
+      const hint = spectateNextHint();
+      next.textContent = hint;
+      next.classList.toggle("hidden", !hint);
+    }
     const advance = $("spectate-advance");
     if (advance) {
       advance.disabled = state.busy || state.advancing;
@@ -1905,7 +2159,10 @@ state.revealInfo = info;
     if (!data || typeof data !== "object") {
       return;
     }
+    const beforeSeq = state.lastSeq;
+    const fresh = collectFreshEntries(data, beforeSeq);
     applyGame(data);
+    recordSpectateEntries(fresh);
     const view = setVoteView(data);
     const killedId = idOf(data.killed);
     const killedName = nameOf(data.killed) || (killedId ? playerName(killedId) : "");
@@ -1950,6 +2207,9 @@ state.revealInfo = info;
 
   async function doAdvance() {
     if (!state.game || state.busy) {
+      return;
+    }
+    if (!spectateVisible()) {
       return;
     }
     state.advancing = true;
@@ -3069,41 +3329,38 @@ state.revealInfo = info;
     }
     if (phase === "ended") {
       return state.endPending && !state.endRevealed
-        ? "票已经落定。先看看票板与处决结果，再点「查看结局」。"
-        : "本局已结束。";
+        ? "下一步：点「查看结局」——先看票板与处决结果，再翻底牌。"
+        : "本局已结束。下一步：点「再来一局」。";
     }
     if (!youAlive()) {
       if (ghostVoteOpen()) {
-        return "你已出局，但桌上正在落票——亡者票只有一次，投完就只剩看。";
+        return "下一步：桌上正在落票。亡者票只有一次，选人后点「投出你的一票」。";
       }
       if (state.ghostVoteUsed) {
-        return "你已出局，亡者票已经用过。点「继续观战」把这一夜看完。";
+        return "下一步：点「继续观战」把这一夜看完。";
       }
       if (lastWordsEligible() && state.lastWordsAvailable !== false) {
-        return "你已出局。先留一句遗言，再点「继续观战」让他们走完这一夜。";
+        return "下一步：先留一句遗言，再点「继续观战」。";
       }
-      return "你已出局，只能旁观。点「继续观战」，让他们把这一夜走完。";
+      return "下一步：点「继续观战」，让他们把这一夜走完。";
     }
     if (phase === "defense") {
       const target = state.nominated ? state.nominated.name : "被提名者";
-      return `「${target}」正在自辩。听完再落票——可投任意在场的人，也能留一句理由。`;
+      return `下一步：听完「${target}」自辩，在票板选人，再按「投票」。`;
     }
     if (phase === "runoff") {
       const round = Math.max(1, state.runoffStalemate);
-      return `平票未决。第 ${round} 次加赛：只在平票的人之间再投一次。`;
+      return `下一步：第 ${round} 次加赛，只在平票的人里选一个，按「再投一次」。`;
     }
     if (phase === "nomination") {
-      return "点席位选人，再按「提名」进入自辩。";
+      return "下一步：点席位选人，再按「提名」；不想提名就按「继续讨论」。";
     }
     if (phase === "night") {
       return youRole() === "murderer"
-        ? "熄灯了。选一个人，然后动手。"
-        : "你不是凶手。闭上眼睛，等天亮。";
+        ? "下一步：点席位选一个人，再按「动手」。"
+        : "下一步：按「等待天亮」，看这一夜发生了什么。";
     }
-    if (phase === "ended") {
-      return "本局已结束。";
-    }
-    return "轮到你说话。问一句，或者按「结束讨论，提名」。";
+    return "下一步：可以追问，也可以按「结束讨论，提名」。";
   }
 
   function renderActionBar() {
@@ -3345,7 +3602,7 @@ state.revealInfo = info;
       const day = Number(step.day) || 0;
       const prefix = day ? `第 ${day} 天 · ` : "";
       if (step.from && step.to) {
-        return `${prefix}${step.from} 倒下后，原爪牙 ${step.to} 接位`;
+        return `${prefix}原爪牙 ${step.to} 接位（${step.from} 倒下后）`;
       }
       if (step.to) {
         return `${prefix}原爪牙 ${step.to} 接位`;
@@ -3808,6 +4065,32 @@ state.revealInfo = info;
     return kept.join("") || raw;
   }
 
+  function revealDeathText(info) {
+    const killed = info && info.killed && info.killed.name ? info.killed.name : "";
+    const executed = info && info.executed && info.executed.name ? info.executed.name : "";
+    const parts = [];
+    if (killed) {
+      parts.push(`夜杀 · ${killed}`);
+    }
+    if (executed) {
+      parts.push(`处决 · ${executed}`);
+    }
+    if (parts.length) {
+      return parts.join("；");
+    }
+    const rows = resolveAftermath();
+    const fallback = [];
+    for (const row of rows) {
+      if (row.killed && row.killed.name) {
+        fallback.push(`夜杀 · ${row.killed.name}`);
+      }
+      if (row.executed && row.executed.name) {
+        fallback.push(`处决 · ${row.executed.name}`);
+      }
+    }
+    return fallback.length ? [...new Set(fallback)].join("；") : "无";
+  }
+
   function renderEndReveal() {
     const section = $("end-reveal");
     if (!section) {
@@ -3816,13 +4099,18 @@ state.revealInfo = info;
     const info = resolveRevealInfo() || {};
     const minionName = info.minion && info.minion.name ? info.minion.name : "";
     const poisonedName = info.poisoned && info.poisoned.name ? info.poisoned.name : "";
+    const deathText = revealDeathText(info);
     const chain = successionText(info);
     $("end-minion").textContent = minionName
       ? `${minionName}${chain ? " · 原爪牙" : ""}`
       : "无";
     $("end-poisoned").textContent = poisonedName
-      ? `${poisonedName} 被下药，信息有误`
+      ? `${poisonedName} · 信息有误（不是夜杀）`
       : "无";
+    const killedEl = $("end-killed");
+    if (killedEl) {
+      killedEl.textContent = deathText;
+    }
     const chainEl = $("end-succession");
     if (chainEl) {
       chainEl.textContent = chain || "无";
@@ -3831,7 +4119,55 @@ state.revealInfo = info;
     if (row) {
       row.classList.toggle("hidden", !chain);
     }
-    section.classList.toggle("hidden", !(minionName || poisonedName || chain));
+    section.classList.toggle("hidden", !(minionName || poisonedName || chain || deathText !== "无"));
+  }
+
+  function youIsDead() {
+    return Boolean(state.game && state.game.you_alive === false)
+      || Boolean(state.voteResult && state.voteResult.executedId === youId())
+      || Boolean(youPlayer() && youPlayer().alive === false);
+  }
+
+  function resolveYourResult() {
+    const raw = String((state.game && (state.game.your_result || state.game.you_result)) || "").toLowerCase();
+    if (["win", "lose", "draw", "late_good", "late_evil"].includes(raw)) {
+      return raw;
+    }
+    if (["posthumous_good", "after_death_good", "good_after_death"].includes(raw)) {
+      return "late_good";
+    }
+    if (["posthumous_evil", "after_death_evil", "evil_after_death"].includes(raw)) {
+      return "late_evil";
+    }
+    if (/出局后.*好人/u.test(raw)) {
+      return "late_good";
+    }
+    if (/出局后.*(凶手|逃脱)/u.test(raw)) {
+      return "late_evil";
+    }
+    if (/赢/u.test(raw)) {
+      return "win";
+    }
+    if (/输/u.test(raw)) {
+      return "lose";
+    }
+    const winFlag = state.game && state.game.you_win;
+    if (typeof winFlag === "boolean") {
+      return winFlag ? "win" : "lose";
+    }
+    const winner = inferredWinnerLabel() || fallbackWinnerLabel();
+    if (!winner) {
+      return "";
+    }
+    const evil = isEvilRole(youRole());
+    const sideWin = (winner === "好人胜" && !evil) || (winner === "凶手胜" && evil);
+    if (!youIsDead()) {
+      return sideWin ? "win" : "lose";
+    }
+    if (sideWin) {
+      return evil ? "late_evil" : "late_good";
+    }
+    return "lose";
   }
 
   function renderEnd() {
@@ -3847,6 +4183,15 @@ state.revealInfo = info;
     $("end-frame").dataset.result = result;
     $("end-kicker").textContent = result === "murderer" ? "NIGHTFALL · 结局" : "DAWN · 结局";
     $("end-title").textContent = escaped ? "凶手逃脱" : winner;
+    const yourResult = resolveYourResult();
+    const yourEl = $("end-you-result");
+    if (yourEl) {
+      const label = YOUR_RESULT_LABEL[yourResult] || "";
+      yourEl.textContent = label;
+      yourEl.dataset.result = yourResult;
+      yourEl.classList.toggle("hidden", !label);
+    }
+    $("end-frame").dataset.youResult = yourResult || "unknown";
     $("end-subtitle").textContent = dedupeEndMessage((state.game && state.game.message)
       || "雪停了，真相留在了桌上。");
     $("end-murderer").textContent = resolveRevealName();
@@ -3854,9 +4199,7 @@ state.revealInfo = info;
     const role = youRole();
     $("end-you").textContent = `你 · ${ROLE_LABEL[role] || "身份未知"}`;
     renderEndReveal();
-    const youDead = Boolean(state.game && state.game.you_alive === false)
-      || Boolean(state.voteResult && state.voteResult.executedId === youId())
-      || Boolean(youPlayer() && youPlayer().alive === false);
+    const youDead = youIsDead();
     const survived = youDead ? playerDeathDay() : ((state.game && state.game.day) || 1);
     $("end-days").textContent = `${survived} 天`;
     renderEndPortrait();
@@ -4634,6 +4977,10 @@ state.revealInfo = info;
       }
     });
     window.addEventListener("resize", () => {
+      const feed = $("spectate-feed");
+      if (feed && !feed.classList.contains("hidden")) {
+        feed.scrollTop = feed.scrollHeight;
+      }
       if (!state.speakingId) {
         return;
       }
@@ -5047,7 +5394,34 @@ state.revealInfo = info;
     if (!payload.phase && !payload.winner) {
       payload.phase = "discussion";
     }
+    const beforeSeq = state.lastSeq;
+    const dawnText = killedName
+      ? (killedName === "你" ? "天亮时，你没有下楼。" : `天亮时，${killedName} 没有下楼。`)
+      : "天亮了，雪地上多了一行脚印。";
+    const incoming = collectFreshEntries(payload, beforeSeq);
+    if (!incoming.some((entry) => /天亮|天明|次晨/u.test(entry.text))) {
+      const log = Array.isArray(payload.public_log)
+        ? payload.public_log.slice()
+        : ((state.game && Array.isArray(state.game.public_log)) ? state.game.public_log.slice() : []);
+      log.push({
+        seq: maxSeq(log) + 1,
+        speaker_id: "__narration",
+        speaker_name: "旁白",
+        text: dawnText,
+        day: Number(payload.day) || nightDay,
+      });
+      payload.public_log = log;
+    }
+    const dawnEntries = collectFreshEntries(payload, beforeSeq);
+    showNightTransition(
+      "天亮了……",
+      killedName
+        ? `第 ${Number(payload.day) || nightDay} 天。有人没能下楼。`
+        : `第 ${Number(payload.day) || nightDay} 天。雪还在下。`,
+      950,
+    );
     applyGame(payload);
+    recordSpectateEntries(dawnEntries);
     if (killedActualId) {
       markDead(killedActualId);
     }
@@ -5082,9 +5456,7 @@ state.revealInfo = info;
       killed: killedActualId ? { id: killedActualId, name: killedName } : null,
       message,
     });
-    if (killedActualId === youId()) {
-      showToast("你没能熬到天亮。终局揭晓。", "warn", 5200);
-    }
+
     render();
   }
 
@@ -5336,10 +5708,14 @@ state.revealInfo = info;
         openConfirm(
           `今晚对「${displayName(target)}」动手？这一步不可撤回。`,
           "确认动手",
-          () => doNight(target.id),
+          () => {
+            showNightTransition("熄灯了……", "雪光从窗缝里漏进来，楼板响了一下。", 6000);
+            return doNight(target.id);
+          },
         );
         return;
       }
+      showNightTransition("熄灯了……", "你回到房里，听着走廊里的动静。", 6000);
       runAction(() => doNight(null));
     }
   }
@@ -5402,6 +5778,13 @@ state.revealInfo = info;
     state.mockSpectateStep = 0;
     state.mockSpectateVotes = [];
     state.mockGhostVote = null;
+    state.logQueue = [];
+    state.spectateFeed = [];
+    state.spectateFeedDay = 0;
+    state.endYourResult = "";
+    state.endKilledInfo = null;
+    window.clearTimeout(state.logQueueTimer);
+    state.logQueueTimer = 0;
     state.lastWordsAvailable = null;
     state.lastWordsProbed = false;
     state.lastWordsUsed = false;
@@ -5450,7 +5833,165 @@ state.revealInfo = info;
     }
   }
 
+  function mockEndingGame(kind) {
+    const nameOfAgent = (id) => {
+      if (id === "p0") {
+        return "你";
+      }
+      const agent = MOCK_AGENTS.find((item) => item.id === id);
+      return agent ? agent.name : id;
+    };
+    const config = {
+      "end-lose": {
+        youRole: "villager",
+        youAlive: true,
+        winner: "murderer",
+        day: 4,
+        dead: ["p1", "p3"],
+        executed: "p1",
+        killed: "p3",
+        poisoned: "p4",
+        murderer: "p5",
+        finalMurderer: "p5",
+        minion: "p2",
+        message: "旅馆的门没有再开。凶手还站在桌边，剩下的人谁也不敢先动。",
+      },
+      "end-late-good": {
+        youRole: "villager",
+        youAlive: false,
+        winner: "good",
+        day: 4,
+        dead: ["p0", "p2"],
+        executed: "p5",
+        killed: "p0",
+        poisoned: "p2",
+        murderer: "p5",
+        finalMurderer: "p5",
+        minion: "p3",
+        message: "凶手被票了出去。雪停时，好人赢了——只是你已经看不到了。",
+      },
+      "end-win": {
+        youRole: "villager",
+        youAlive: true,
+        winner: "good",
+        day: 4,
+        dead: ["p5", "p3"],
+        executed: "p5",
+        killed: "p3",
+        poisoned: "p4",
+        murderer: "p5",
+        finalMurderer: "p5",
+        minion: "p2",
+        message: "老韩 被票了出去。牌翻开——正是他。天亮时，你还在桌边。",
+      },
+      "end-late-evil": {
+        youRole: "murderer",
+        youAlive: false,
+        winner: "murderer",
+        day: 4,
+        dead: ["p0", "p1"],
+        executed: "p0",
+        killed: "p1",
+        poisoned: "p2",
+        murderer: "p0",
+        finalMurderer: "p4",
+        minion: "p4",
+        message: "你被票了出去，可印章落在了陆明川手里。凶手还是赢了。",
+        succession: [{ from_id: "p0", from_name: "你", to_id: "p4", to_name: "陆明川", day: 3 }],
+      },
+    }[kind];
+    if (!config) {
+      return false;
+    }
+    state.murdererId = config.finalMurderer;
+    state.mockOriginalDemonId = config.murderer;
+    state.murdererName = nameOfAgent(config.murderer);
+    state.mockMinionId = config.minion;
+    state.mockOriginalMinionId = config.minion;
+    state.mockSuccession = (config.succession || []).slice();
+    state.mockPoisonedId = config.poisoned;
+    state.mockAftermath = [];
+    state.revealInfo = null;
+    state.revealName = "";
+    state.endYourResult = "";
+    state.endKilledInfo = null;
+    const players = [
+      { id: "p0", name: "你", public: "封山夜最后一位住客", alive: config.youAlive, is_you: true },
+      ...MOCK_AGENTS.map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        public: agent.public,
+        alive: !config.dead.includes(agent.id),
+        is_you: false,
+      })),
+    ];
+    const you = {
+      id: "p0",
+      name: "你",
+      role: config.youRole,
+      private_info: config.youRole === "villager"
+        ? ["你手上有几段对不上的时间。"]
+        : ["刀在你手里，你知道这局该怎么收。"],
+      teammates: config.youRole === "murderer" ? [nameOfAgent(config.minion)] : [],
+    };
+    const log = [
+      { seq: 1, speaker_id: "__narration", speaker_name: "旁白", text: "暴雪封山，旅馆的门从外面锁死了。", day: 1 },
+      { seq: 2, speaker_id: "p1", speaker_name: "沈玉兰", text: MOCK_OPENERS.p1, day: 1 },
+      { seq: 3, speaker_id: "p2", speaker_name: "周砚青", text: MOCK_OPENERS.p2, day: 1 },
+      { seq: 4, speaker_id: "p3", speaker_name: "阿蘅", text: MOCK_OPENERS.p3, day: 1 },
+      { seq: 5, speaker_id: "p4", speaker_name: "陆明川", text: MOCK_OPENERS.p4, day: 1 },
+      { seq: 6, speaker_id: "p5", speaker_name: "老韩", text: MOCK_OPENERS.p5, day: 1 },
+      { seq: 7, speaker_id: "__narration", speaker_name: "旁白", text: `第 2 天，${nameOfAgent(config.executed)} 被投票处决。`, day: 2 },
+      { seq: 8, speaker_id: "__narration", speaker_name: "旁白", text: `第 3 天，${nameOfAgent(config.killed)} 没有下楼。`, day: 3 },
+      { seq: 9, speaker_id: "__narration", speaker_name: "旁白", text: config.message, day: config.day },
+    ];
+    const reveal = {
+      murderer_id: config.murderer,
+      murderer_name: nameOfAgent(config.murderer),
+      final_murderer_id: config.finalMurderer,
+      final_murderer_name: nameOfAgent(config.finalMurderer),
+      minion_id: config.minion,
+      minion_name: nameOfAgent(config.minion),
+      poisoned_id: config.poisoned,
+      poisoned_name: nameOfAgent(config.poisoned),
+      killed_id: config.killed,
+      killed_name: nameOfAgent(config.killed),
+      executed_id: config.executed,
+      executed_name: nameOfAgent(config.executed),
+      succession: (config.succession || []).map((step) => ({ ...step })),
+    };
+    const game = {
+      game_id: `mock-${Math.random().toString(36).slice(2, 8)}`,
+      day: config.day,
+      phase: "ended",
+      players,
+      you,
+      public_log: log,
+      dead: config.dead.slice(),
+      message: config.message,
+      winner: config.winner,
+      reveal,
+      you_alive: config.youAlive,
+      day_history: [
+        { day: 2, executed: { id: config.executed, name: nameOfAgent(config.executed) }, killed: null, note: "" },
+        { day: 3, executed: null, killed: { id: config.killed, name: nameOfAgent(config.killed) }, note: "" },
+      ],
+      aftermath: [
+        { day: 2, executed: { id: config.executed, name: nameOfAgent(config.executed) }, killed: null, note: "" },
+        { day: 3, executed: null, killed: { id: config.killed, name: nameOfAgent(config.killed) }, note: "" },
+      ],
+    };
+    startGame(game);
+    state.endPending = true;
+    state.endRevealed = false;
+    render();
+    return true;
+  }
+
   function mockCreate() {
+    if (mockEndingGame(state.mockCase)) {
+      return;
+    }
     const forcedVillager = [
       "you-die", "short", "short2", "execute", "execute3", "vote-you", "tie",
       "runoff", "runoff2", "inspect", "betray", "lastwords", "spectate",
@@ -5506,6 +6047,13 @@ state.revealInfo = info;
     state.mockSpectateStep = 0;
     state.mockSpectateVotes = [];
     state.mockGhostVote = null;
+    state.logQueue = [];
+    state.spectateFeed = [];
+    state.spectateFeedDay = 0;
+    state.endYourResult = "";
+    state.endKilledInfo = null;
+    window.clearTimeout(state.logQueueTimer);
+    state.logQueueTimer = 0;
     state.ghostVoteUsed = false;
     state.ghostTargetId = null;
     state.ghostVotes = [];
@@ -6050,6 +6598,10 @@ state.revealInfo = info;
     const current = findPlayer(state.murdererId);
     const minion = findPlayer(state.mockOriginalMinionId);
     const poisoned = findPlayer(state.mockPoisonedId);
+    const killedRow = [...state.mockAftermath].reverse().find((row) => row && row.killed);
+    const executedRows = [...state.mockAftermath].reverse().filter((row) => row && row.executed);
+    const killed = killedRow ? killedRow.killed : null;
+    const executed = executedRows.length ? executedRows[0].executed : null;
     return {
       murderer_id: originalId,
       murderer_name: original ? original.name : state.murdererName,
@@ -6060,6 +6612,10 @@ state.revealInfo = info;
       succession: state.mockSuccession.slice(),
       poisoned_id: state.mockPoisonedId,
       poisoned_name: poisoned ? poisoned.name : "",
+      killed_id: killed && killed.id ? killed.id : "",
+      killed_name: killed && killed.name ? killed.name : "",
+      executed_id: executed && executed.id ? executed.id : "",
+      executed_name: executed && executed.name ? executed.name : "",
     };
   }
 
@@ -6129,37 +6685,88 @@ state.revealInfo = info;
     if (!state.game) {
       throw new Error("还没有开局。");
     }
-    const alive = mockAlive();
-    const agents = alive.filter((player) => !player.is_you);
-    const day = (state.game.day || 1) + 1;
+    const phase = normalizePhase(state.game.phase);
+    const votePhase = phase === "defense" || phase === "runoff";
+    const day = phase === "night" ? (state.game.day || 1) + 1 : (state.game.day || 1);
     state.game.day = day;
     mockMaybeWhisper();
     state.mockSpectateStep += 1;
     const step = state.mockSpectateStep;
 
-    if (step === 1) {
-      const scripted = { p1: "p5", p2: "p5", p3: "p1", p4: "p2", p5: "p1" };
-      const votes = buildMockSpectateVotes(agents, scripted);
-      state.mockSpectateVotes = votes;
+    if (!votePhase) {
+      const alive = mockAlive();
+      const agents = alive.filter((player) => !player.is_you);
+      const log = state.game.public_log;
+      const fresh = [];
+      const speakerCount = Math.min(4, agents.length);
+      for (let index = 0; index < speakerCount; index += 1) {
+        const speaker = agents[index];
+        const entry = {
+          seq: nextSeq(log),
+          speaker_id: speaker.id,
+          speaker_name: speaker.name,
+          text: mockLine(speaker),
+          day,
+        };
+        log.push(entry);
+        fresh.push(entry);
+      }
+      const target = randomOf(agents.filter((player) => player.id !== state.murdererId))
+        || randomOf(agents);
+      let defense = null;
+      if (target) {
+        const text = MOCK_DEFENSE_LINES[target.id] || "该说的我都说过了。再问，我也只有这句话。";
+        defense = { speaker_id: target.id, speaker_name: target.name, text };
+        const nomination = {
+          seq: nextSeq(log),
+          speaker_id: "__narration",
+          speaker_name: "旁白",
+          text: `第 ${day} 天，${target.name} 被提上桌。先听自辩。`,
+          day,
+        };
+        const defenseEntry = {
+          seq: nextSeq(log),
+          speaker_id: target.id,
+          speaker_name: target.name,
+          text,
+          day,
+        };
+        log.push(nomination, defenseEntry);
+        fresh.push(nomination, defenseEntry);
+        state.nominated = { id: target.id, name: target.name };
+        state.ballotTargetId = target.id;
+      }
+      state.mockSpectateVotes = buildMockSpectateVotes(agents, {
+        p1: "p5", p2: "p5", p3: "p1", p4: "p2", p5: "p1",
+      });
       const threshold = Math.floor(mockAlive().length / 2) + 1;
-      const log = mockNarration(`第 ${day} 天，桌上重新落票。你退在廊下，只看。`);
       return {
         day,
         phase: "defense",
-        votes,
-        tally: tallyFromVotes(normalizeVotes(votes)),
+        target: target ? { id: target.id, name: target.name } : null,
+        defense,
+        votes: [],
+        tally: {},
         threshold,
         executed: null,
         tie: false,
         winner: null,
         ghost_vote_available: !state.ghostVoteUsed,
-        message: "桌上重新落票。亡者票还压在你袖子里。",
+        message: target ? `${target.name} 被提名。先听自辩。` : "桌上重新落票。",
         public_log: log.slice(),
+        new_entries: fresh,
       };
     }
 
-    const votes = state.mockSpectateVotes.slice();
-    if (state.mockGhostVote) {
+    let votes = state.mockSpectateVotes.slice();
+    if (!votes.length) {
+      const agentsNow = mockAlive().filter((player) => !player.is_you);
+      state.mockSpectateVotes = buildMockSpectateVotes(agentsNow, {
+        p1: "p5", p2: "p5", p3: "p1", p4: "p2", p5: "p1",
+      });
+      votes = state.mockSpectateVotes.slice();
+    }
+    if (state.mockGhostVote && !votes.some((vote) => vote.voter_id === state.mockGhostVote.voter_id)) {
       votes.push(state.mockGhostVote);
     }
     const tally = tallyFromVotes(normalizeVotes(votes));
@@ -6167,6 +6774,12 @@ state.revealInfo = info;
     const top = tally[0] || { id: "", count: 0 };
     const tieTop = tally.length > 1 && tally[1].count === top.count;
     let executedId = (!tieTop && top.id && top.count >= threshold) ? top.id : "";
+    if (!executedId && state.mockGhostVote) {
+      const murdererAlive = findPlayer(state.murdererId);
+      if (murdererAlive && murdererAlive.alive !== false) {
+        executedId = murdererAlive.id;
+      }
+    }
     if (!executedId && step >= 3) {
       const murdererAlive = findPlayer(state.murdererId);
       if (murdererAlive && murdererAlive.alive !== false) {
