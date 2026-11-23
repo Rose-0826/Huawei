@@ -5,6 +5,17 @@
 
 **白天公开讨论、提名与投票，夜晚有人下手。谁是混在住客里的凶手？**
 
+## 玩法一览
+
+- 6 人局：1 恶魔 + 1 爪牙 + 4 镇民，真人身份每局随机。
+- 恶魔每夜杀人；恶魔被处决且爪牙存活时，爪牙接位，游戏继续。
+- 镇民中可能有 1 人被下药，他的一条私下信息是错的。
+- 镇民每局 1 次查验：只问“是不是恶魔”，可保密，也可公开“我查过 X”。
+- 讨论阶段可密谈：每天 1 次、每局 3 次；正文只进私人日志，但可能被对方在公开场合漏出一句。
+- 提名 → 自辩 → 质证 → 投票；严格过半才处决，平票进入加赛，再平票无人出局。
+- 真人出局后仍可观战，并保留 1 次亡者票；终局揭晓恶魔、爪牙、传位链与被下药者。
+- 右上角「规则」随时可查；「记录」可回看公开与私人日志。
+
 ## 最快跑起来（Mock，不需要密钥）
 
 要求：Python 3.10+、pip。
@@ -56,6 +67,28 @@ http://127.0.0.1:8000/docs
 ```
 
 `MOCK_LLM=1` 时不会请求真实模型，台词是固定文案，但开局、讨论、提名、自辩、投票、处决、夜晚与胜负结算整条链路都会真实运行。
+
+## 一键启动
+
+`project/` 下提供两个脚本，会自动创建 `.venv`、安装依赖并启动：
+
+```powershell
+# Windows PowerShell
+cd project
+.\start.ps1          # 有 .env 用真实模型，没有则 Mock
+.\start.ps1 -Mock    # 强制 Mock
+.\start.ps1 -Real    # 强制真实模型，要求 .env 存在
+```
+
+```bash
+# macOS / Linux / Git Bash
+cd project
+./start.sh           # 有 .env 用真实模型，没有则 Mock
+./start.sh --mock    # 强制 Mock
+./start.sh --real    # 强制真实模型，要求 .env 存在
+```
+
+打开 `http://127.0.0.1:8000/blood`。
 
 ## 配置真实模型
 
@@ -150,10 +183,10 @@ python -m pytest -q
 当前结果：
 
 ```text
-99 passed, 1 skipped
+177 passed, 1 skipped
 ```
 
-测试覆盖阵营模式的边界与越权：凶手身份只返回给真人、出局者不能操作、发言与质证次数上限、投票门槛与平票、夜晚目标必填、模型不可用时模板兜底，以及公开日志与回看日志不泄露秘密。
+测试覆盖阵营模式的边界与越权：凶手身份只返回给真人、出局者不能操作、发言与质证次数上限、投票门槛与平票加赛、亡者票、夜晚目标必填、爪牙不投存活恶魔、模型不可用时模板兜底，以及公开日志与回看日志不泄露秘密。
 
 真实模型用例单独标记，默认跳过；只有显式开启才会跑：
 
@@ -201,8 +234,13 @@ docker run --rm -p 8000:8000 \
 | POST | `/blood/games/{game_id}/discuss` | 全体存活 agent 各说一句 |
 | POST | `/blood/games/{game_id}/speak` | 真人公开发言，一名 agent 回应 |
 | POST | `/blood/games/{game_id}/nominate` | 提名处决目标并触发自辩 |
-| POST | `/blood/games/{game_id}/vote` | 全体投票，达到门槛才处决 |
-| POST | `/blood/games/{game_id}/night` | 夜晚结算 |
+| POST | `/blood/games/{game_id}/vote` | 全体投票（理由并发生成），含平票加赛、门槛与亡者票 |
+| POST | `/blood/games/{game_id}/night` | 夜晚结算，凶手必杀 |
+| POST | `/blood/games/{game_id}/confide` | 真人密谈，每天 1 次、每局 3 次 |
+| GET | `/blood/games/{game_id}/private-log` | 只给真人的密谈正文 |
+| POST | `/blood/games/{game_id}/inspect` | 镇民 1 次查验，可选保密或公开 |
+| POST | `/blood/games/{game_id}/advance` | 真人出局后推进观战 |
+| POST | `/blood/games/{game_id}/last-words` | 出局后留 1 条遗言 |
 | GET | `/blood/games/{game_id}/log` | 回看日志，不含秘密字段 |
 
 凶手身份、队友与私有事实只返回给真人；公开日志和回看日志不含秘密，终局才揭晓凶手。

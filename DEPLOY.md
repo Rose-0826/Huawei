@@ -2,6 +2,15 @@
 
 目标：从一台空机器开始，到浏览器里能打开「雾镇」电子血染页面。
 
+## 当前版本
+
+- 6 人局：1 恶魔 + 1 爪牙 + 4 镇民，真人身份每局随机。
+- 恶魔每夜杀人；恶魔被处决且爪牙存活时，爪牙接位，游戏继续。
+- 镇民中可能有 1 人被下药；镇民每局 1 次查验，可保密或公开。
+- 讨论阶段可密谈；提名后自辩、质证、投票；平票进入加赛。
+- 真人出局后可观战并保留 1 次亡者票。
+- 前端含规则弹窗、对局记录与公开/私人日志。
+
 有两条路：
 
 - 方案 A：Docker，推荐，评委复现最省事。
@@ -132,6 +141,26 @@ docker rmi mistvale
 
 要求：Python 3.10+、pip、能访问 MaaS 的网络。
 
+### 一键脚本（推荐）
+
+`project/` 下已带 `start.ps1`（Windows）与 `start.sh`（Linux/macOS），会自动创建 `.venv`、安装依赖并启动：
+
+```powershell
+cd project
+.\start.ps1            # 有 .env 用真实模型，没有则 Mock
+.\start.ps1 -Mock      # 强制 Mock
+.\start.ps1 -Real      # 强制真实模型，要求 .env 存在
+```
+
+```bash
+cd project
+./start.sh             # 有 .env 用真实模型，没有则 Mock
+./start.sh --mock      # 强制 Mock
+./start.sh --real      # 强制真实模型，要求 .env 存在
+```
+
+打开 `http://127.0.0.1:8000/blood`。手动安装依赖的步骤仍保留在下面。
+
 ### Ubuntu / Debian
 
 ```bash
@@ -255,7 +284,7 @@ cd project
 python -m pytest -q
 ```
 
-应看到 `99 passed, 1 skipped`。真模型冒烟测试默认跳过；显式开启：
+应看到 `177 passed, 1 skipped`。真模型冒烟测试默认跳过；显式开启：
 
 ```bash
 RUN_REAL_MODEL=1 python -m pytest -q -m real_model

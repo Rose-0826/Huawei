@@ -10,6 +10,7 @@
     python export_traces.py                  # 导出到 ./proof/ai-trace/
     python export_traces.py -o D:/xxx/proof  # 指定输出目录
     python export_traces.py --max-output 500 # 工具输出截断长度
+    python export_traces.py --dir E:/huawei  # 只导出该工作目录的会话
 
 特点:
     - 只读：先把 db 连 WAL 一起拷到临时目录再读，绝不碰原始数据
@@ -76,6 +77,24 @@ def clip(text, limit):
     return text
 
 
+def normalize_dir(value):
+    """把工作目录规范成可比较的小写斜杠路径；空值表示不过滤。"""
+    if not value:
+        return None
+    text = str(Path(value).expanduser()).replace("\\", "/").rstrip("/")
+    return text.lower()
+
+
+def session_matches_dir(session_dir, wanted):
+    """判断会话目录是否就是目标目录或位于其下。"""
+    if not wanted:
+        return True
+    if not session_dir:
+        return False
+    text = str(session_dir).replace("\\", "/").rstrip("/").lower()
+    return text == wanted or text.startswith(wanted + "/")
+
+
 def render_tool_part(data, max_output):
     """把一次工具调用渲染成 md。兼容 opencode part 结构。"""
     tool = data.get("tool") or data.get("name") or "unknown"
@@ -126,7 +145,8 @@ def render_part(data, max_output):
     return "<details><summary>其他事件 (" + ptype + ")</summary>\n\n```json\n" + clip(raw, 800) + "\n```\n\n</details>"
 
 
-def export(db_path: Path, out_dir: Path, max_output: int):
+def export(db_path: Path, out_dir: Path, max_output: int, workdir: str | None = None):
+    wanted = normalize_dir(workdir)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         snap = snapshot_db(db_path, Path(td))
         con = sqlite3.connect(f"file:{snap}?mode=ro", uri=True)
@@ -136,10 +156,17 @@ def export(db_path: Path, out_dir: Path, max_output: int):
             "SELECT id, title, directory, time_created, time_updated, parent_id "
             "FROM session ORDER BY time_created ASC"
         ).fetchall()
+        sessions = [
+            session for session in sessions
+            if session_matches_dir(session["directory"], wanted)
+        ]
 
         if not sessions:
             con.close()
-            print("⚠️  数据库里还没有任何会话记录。先在码道里聊上几句再来导。")
+            if wanted:
+                print(f"⚠️  没有匹配 {workdir} 的会话记录。去掉 --dir 可导出全部。")
+            else:
+                print("⚠️  数据库里还没有任何会话记录。先在码道里聊上几句再来导。")
             return 1
 
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -248,13 +275,14 @@ def main():
     ap.add_argument("-o", "--out", default="proof/ai-trace", help="输出目录")
     ap.add_argument("--max-output", type=int, default=2000, help="单条工具输出截断长度")
     ap.add_argument("--db", default=None, help="手动指定 opencode.db 路径")
+    ap.add_argument("--dir", default=None, help="只导出 directory 匹配该工作目录的会话（默认不限制）")
     args = ap.parse_args()
 
     db = Path(args.db) if args.db else find_db()
     if not db or not db.exists():
         print("❌ 没找到 opencode.db。用 --db 手动指定，或确认码道已至少启动过一次。")
         return 2
-    return export(db, Path(args.out), args.max_output)
+    return export(db, Path(args.out), args.max_output, args.dir)
 
 
 if __name__ == "__main__":
