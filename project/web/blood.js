@@ -1123,7 +1123,13 @@ state.mockGhostVote = null;
       ["drunk_name", source.drunk_name],
     ]);
     if (poisoned.name || poisoned.id) {
-      info.poisoned = poisoned;
+      const poisonedNote = typeof source.poisoned_note === "string"
+        ? source.poisoned_note.trim()
+        : "";
+      info.poisoned = {
+        ...poisoned,
+        note: poisonedNote || (info.poisoned && info.poisoned.note) || "",
+      };
     }
     const killed = firstPersonRef([
       ["killed_id", source.killed_id],
@@ -4451,13 +4457,16 @@ state.revealInfo = info;
     const info = resolveRevealInfo() || {};
     const minionName = info.minion && info.minion.name ? info.minion.name : "";
     const poisonedName = info.poisoned && info.poisoned.name ? info.poisoned.name : "";
+    const poisonedNote = info.poisoned && info.poisoned.note
+      ? info.poisoned.note
+      : "信息有误（不是夜杀）";
     const deathText = revealDeathText(info);
     const chain = successionText(info);
     $("end-minion").textContent = minionName
       ? `${minionName}${chain ? " · 原爪牙" : ""}`
       : "无";
     $("end-poisoned").textContent = poisonedName
-      ? `${poisonedName} · 信息有误（不是夜杀）`
+      ? `${poisonedName} · ${poisonedNote}`
       : "无";
     const killedEl = $("end-killed");
     if (killedEl) {

@@ -43,7 +43,8 @@ SYSTEM_PROMPT: str = (
     "10. 你必须与你当天已经说过的原话、自辩和投票理由保持一致；"
     "不得改口、不得新增未发生的地点、时辰、人物或动作。\n"
     "11. 投票理由只能引用被投对象当天公开说过的原话；"
-    "不得把自己的推测或别人转述当成对方的原话。\n"
+    "不得把自己的推测或别人转述当成对方的原话，也不得把对方质问别人的话"
+    "反扣成他自己认罪。\n"
     "12. 若提示词告诉你某人是你的同伴，你要在公开场合替他打掩护，"
     "但绝不能承认你们是一伙的；也不要与别人复述同一条私密片段。\n"
 )
@@ -204,6 +205,17 @@ def build_prompt(
         )
     lines.append("你私下知道的事：")
     lines.extend(f"- {text}" for text in player.private_info)
+    pact_names = [
+        other.name
+        for other in state.players
+        if other.id in player.pact_ids and other.alive
+    ]
+    if pact_names:
+        lines.append(
+            "你和 " + "、".join(pact_names)
+            + " 在廊下有过默契：今天先不急着互相提名；"
+            "公开场合不要把这层默契说破。"
+        )
     others = [
         f"{other.name}（{other.public}）"
         for other in state.players
@@ -246,10 +258,17 @@ def build_prompt(
         lines.extend(f"- {text}" for text in reasons_today)
     hint = getattr(state, "pending_hint", "") or ""
     if hint == "defense":
-        lines.append(
-            "你刚被当众提名，必须先正面自辩：说清你那晚在哪、做过什么，"
-            "不许只把话引开。"
-        )
+        if getattr(state, "defense_origin", "") == "ai":
+            lines.append(
+                "桌上的人刚把你推上桌，没点名是谁带的头。自辩时不要问"
+                "「你凭什么提名我」，用「既然把我推上桌」这类说法，"
+                "正面说清你那晚在哪、做过什么，不许只把话引开。"
+            )
+        else:
+            lines.append(
+                "旅客刚当众提名你，必须先正面自辩：说清你那晚在哪、做过什么，"
+                "不许只把话引开。"
+            )
     elif hint == "accused":
         lines.append("有人当面点了你的名，你必须正面回答或反驳，不许换话题。")
     elif hint == "followup":
@@ -282,6 +301,8 @@ def build_prompt(
             f"理由必须围绕 {target_name}，并引用{target_name}今天说过的一句原话；"
             "不要套用「他的说法最对不上」这类空话，也不要提到别的玩家。"
             "理由里若提到时辰、地点或动作，必须来自下面的原话，不得自行编造。"
+            "引用原话时只引他陈述自己行踪、动机或为自己辩解的话；"
+            "如果那句话是他在质问或怀疑别人，不得把它说成是他自己认罪。"
         )
         target_lines = [
             entry.text
@@ -355,8 +376,18 @@ def fallback_line(
 ) -> str:
     """按角色模板生成一句兜底发言，被点名或自辩时给出正面回应。"""
     if hint in {"defense", "accused"}:
-        from app.blood import DEFENSE_FALLBACK_DEFAULT, DEFENSE_FALLBACKS
+        from app.blood import (
+            DEFENSE_FALLBACK_DEFAULT,
+            DEFENSE_FALLBACK_DEFAULT_AI,
+            DEFENSE_FALLBACKS,
+            DEFENSE_FALLBACKS_AI,
+        )
 
+        if hint == "defense" and getattr(state, "defense_origin", "") == "ai":
+            return DEFENSE_FALLBACKS_AI.get(
+                player.id,
+                DEFENSE_FALLBACK_DEFAULT_AI,
+            )
         return DEFENSE_FALLBACKS.get(player.id, DEFENSE_FALLBACK_DEFAULT)
     target_id = _top_target(state, player)
     name = _name_of(state, target_id)

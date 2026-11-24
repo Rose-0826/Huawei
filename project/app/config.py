@@ -125,5 +125,19 @@ BLOOD_STILL_TIE_MESSAGE: Final[str] = "仍平票，今晚无人被处决。"
 BLOOD_EXECUTE_MESSAGE: Final[str] = "{name} 被投票处决。"
 BLOOD_NIGHT_MESSAGE: Final[str] = "天亮时，{name} 没有下楼。"
 BLOOD_POISON_NOTE: Final[str] = "被下药者的私密信息有误，与夜杀无关。"
+# 第十四轮：本局专属当夜线索（双人排查 + 清白佐证）
+
+BLOOD_DYNAMIC_PAIR_TEMPLATE: Final[str] = (
+    "昨晚后半夜，你在走廊拐角看见两个身影先后经过，"
+    "其中一个心里有鬼：{evil} 或 {good}。"
+)
+BLOOD_DYNAMIC_CLEAR_TEMPLATE: Final[str] = (
+    "昨晚{good}房里的灯一直亮到后半夜，你听见这人没出过门，"
+    "不像夜里动手的恶魔。"
+)
+BLOOD_PACT_NOTE_TEMPLATE: Final[str] = (
+    "你方才在廊下与{other}低声通过气，今天先不急着互相提名。"
+)
+BLOOD_POISON_NOTE_DYNAMIC: Final[str] = "{kind}被下药篡改，不能作证。"
 # 必须凭持有人身份才能认领的线索物件
 OWNERSHIP_KEY_TERMS: Final[tuple[str, ...]] = ("名分", "银元", "手帕")

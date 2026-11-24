@@ -34,8 +34,12 @@ from app.config import (
     BLOOD_MEMORY_MARKERS,
     BLOOD_MINION_COUNT,
     BLOOD_NIGHT_MESSAGE,
+    BLOOD_DYNAMIC_CLEAR_TEMPLATE,
+    BLOOD_DYNAMIC_PAIR_TEMPLATE,
+    BLOOD_PACT_NOTE_TEMPLATE,
     BLOOD_POISON_FALLBACK_TEXT,
     BLOOD_POISON_NOTE,
+    BLOOD_POISON_NOTE_DYNAMIC,
     BLOOD_POISON_TIME_SHIFT_MINUTES,
     BLOOD_PRIVATE_FACTS_MAX,
     BLOOD_PRIVATE_FACTS_MIN,
@@ -139,6 +143,16 @@ DEFENSE_FALLBACKS: dict[str, str] = {
 }
 DEFENSE_FALLBACK_DEFAULT: str = (
     "你提名我，我不能不答。那晚我在哪儿、做过什么，我都说了，没进过书房。"
+)
+DEFENSE_FALLBACKS_AI: dict[str, str] = {
+    "p1": "既然把我推上桌，我把话说明白：那晚我进过二楼，是点灯油查账，没进书房。要查就查谁在我之后下了楼。",
+    "p2": "既然把我推上桌，这笔账我不认。那晚我在楼梯口听见书房吵得凶，就没敢往前——听见和动手是两回事。",
+    "p3": "既然把我推上桌，我把话说明白：我上楼送过炭，灯太暗，书房门是掩着的，我没进去。谁最后出来，你们该问。",
+    "p4": "既然把我推上桌，我认我去过二楼。我是听见闷响才探头，没敢声张。可要说动手，我连拨火棍都没碰过。",
+    "p5": "既然把我推上桌，我认我没说全。那晚我在马厩添草，后来端热水进去，人已经没了。我瞒的是别的，不是人命。",
+}
+DEFENSE_FALLBACK_DEFAULT_AI: str = (
+    "既然把我推上桌，我不能不答。那晚我在哪儿、做过什么，我都说了，没进过书房。"
 )
 VOTE_REASON_FALLBACKS: tuple[str, ...] = (
     "我投{name}，他方才说“{quote}”，这话绕开了时辰。",
@@ -348,6 +362,10 @@ class BloodPlayer:
     poisoned: bool = False
     pact_ids: set[str] = field(default_factory=set)
     trust_map: dict[str, float] = field(default_factory=dict)
+    dynamic_indexes: set[int] = field(default_factory=set)
+    pact_indexes: set[int] = field(default_factory=set)
+    dynamic_evil_name: str = ""
+    dynamic_clear_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -417,6 +435,10 @@ class BloodState:
     original_murderer_id: str = ""
     succession: list[dict[str, object]] = field(default_factory=list)
     poisoned_id: str | None = None
+    poisoned_clue_original: str = ""
+    poisoned_clue_rewritten: str = ""
+    poisoned_clue_kind: str = ""
+    defense_origin: str = ""
     focus_by_day: dict[int, dict[str, str]] = field(default_factory=dict)
     whisper_days: dict[int, list[str]] = field(default_factory=dict)
     rng: random.Random = field(default_factory=random.Random, repr=False)
@@ -714,6 +736,7 @@ def _create_state(
         minion.private_info[-1] = (
             f"只有你知道：{murderer.name} 是昨夜动手的恶魔，你们是一伙的。"
         )
+    _inject_dynamic_clues(state, rng)
     _apply_poison(state, rng)
     _init_suspicion(state, rng)
     state.message = "风雪封路，六个人围坐在灯下。昨夜有人动了手。"
@@ -783,8 +806,74 @@ def _you_witness_line(script: Script, rng: random.Random) -> str:
     return f"你记得那晚的一条：{rng.choice(pool).text}"
 
 
+def _inject_dynamic_clues(state: BloodState, rng: random.Random) -> None:
+    """给好人镇民追加两条本局专属当夜线索，真人为好人时优先拿到清白佐证。"""
+    you = _you(state)
+    good_agents = [
+        player
+        for player in state.players
+        if player.role == "villager" and not player.is_you
+    ]
+    if len(good_agents) < 2:
+        return
+    rng.shuffle(good_agents)
+    receivers: list[BloodPlayer] = []
+    if you.role == "villager":
+        receivers.append(you)
+    receivers.extend(good_agents)
+    clear_receiver = receivers[0]
+    pair_receiver = next(
+        player for player in receivers[1:] if player.id != clear_receiver.id
+    )
+    clear_pool = [
+        player
+        for player in state.players
+        if player.role == "villager" and player.id != clear_receiver.id
+    ]
+    if not clear_pool:
+        return
+    clear_target = rng.choice(clear_pool)
+    _append_dynamic_clue(
+        clear_receiver,
+        BLOOD_DYNAMIC_CLEAR_TEMPLATE.format(good=clear_target.name),
+        clear_name=clear_target.name,
+    )
+    evil = _player(state, state.murderer_id)
+    good_pool = [
+        player
+        for player in state.players
+        if player.role == "villager"
+        and not player.is_you
+        and player.id != pair_receiver.id
+        and (evil is None or player.id != evil.id)
+    ]
+    if evil is None or not good_pool:
+        return
+    good = rng.choice(good_pool)
+    _append_dynamic_clue(
+        pair_receiver,
+        BLOOD_DYNAMIC_PAIR_TEMPLATE.format(evil=evil.name, good=good.name),
+        evil_name=evil.name,
+    )
+
+
+def _append_dynamic_clue(
+    player: BloodPlayer,
+    text: str,
+    evil_name: str = "",
+    clear_name: str = "",
+) -> None:
+    """把一条当夜线索追加到私密信息末尾，并记录可被下药改写的索引。"""
+    player.private_info.append(text)
+    player.dynamic_indexes.add(len(player.private_info) - 1)
+    if evil_name:
+        player.dynamic_evil_name = evil_name
+    if clear_name:
+        player.dynamic_clear_name = clear_name
+
+
 def _apply_poison(state: BloodState, rng: random.Random) -> None:
-    """随机给一名镇民下药，把其私有信息里一条换成错误时间或人物。"""
+    """随机给一名镇民下药，优先污染其本局当夜线索。"""
     candidates = [
         player
         for player in state.players
@@ -792,12 +881,20 @@ def _apply_poison(state: BloodState, rng: random.Random) -> None:
     ]
     if not candidates:
         return
-    victim = rng.choice(candidates)
+    dynamic = [player for player in candidates if player.dynamic_indexes]
+    victim = rng.choice(dynamic or candidates)
     index = _poison_index(state, victim, rng)
     original = victim.private_info[index]
-    victim.private_info[index] = _poison_text(state, victim, original, rng)
+    rewritten = _poison_text(state, victim, original, rng)
+    victim.private_info[index] = rewritten
     victim.poisoned = True
     state.poisoned_id = victim.id
+    state.poisoned_clue_original = original
+    state.poisoned_clue_rewritten = rewritten
+    if victim.dynamic_clear_name:
+        state.poisoned_clue_kind = "清白佐证"
+    elif victim.dynamic_evil_name:
+        state.poisoned_clue_kind = "双人排查线索"
 
 
 def _poison_index(
@@ -805,7 +902,9 @@ def _poison_index(
     victim: BloodPlayer,
     rng: random.Random,
 ) -> int:
-    """优先挑含具体时刻或他人姓名的条目来改写。"""
+    """优先改写受害者手里的本局当夜线索，其次挑含时刻或他人姓名的条目。"""
+    if victim.dynamic_indexes:
+        return rng.choice(sorted(victim.dynamic_indexes))
     timed = [
         index
         for index, text in enumerate(victim.private_info)
@@ -830,6 +929,34 @@ def _poison_text(
     rng: random.Random,
 ) -> str:
     """把一条私有信息改写成错误的时辰、人物或地点，且绝不与原文相同。"""
+    if victim.dynamic_evil_name and victim.dynamic_evil_name in text:
+        pool = [
+            player.name
+            for player in state.players
+            if player.id != victim.id
+            and player.role == "villager"
+            and player.name not in text
+        ]
+        if pool:
+            return text.replace(
+                victim.dynamic_evil_name,
+                rng.choice(pool),
+                1,
+            )
+    if victim.dynamic_clear_name and victim.dynamic_clear_name in text:
+        pool = [
+            player.name
+            for player in state.players
+            if player.id != victim.id
+            and player.role in EVIL_ROLES
+            and player.name not in text
+        ]
+        if pool:
+            return text.replace(
+                victim.dynamic_clear_name,
+                rng.choice(pool),
+                1,
+            )
     match = TIME_POISON_PATTERN.search(text)
     if match is not None:
         hour = int(match.group(1))
@@ -877,6 +1004,11 @@ def _init_suspicion(state: BloodState, rng: random.Random) -> None:
                 value += BLOOD_SUSPICION_FACT
             if player.role in EVIL_ROLES and other.role == "villager":
                 value += BLOOD_SUSPICION_MURDERER
+            if player.role in EVIL_ROLES and other.role in EVIL_ROLES:
+                value = min(
+                    value,
+                    BLOOD_INITIAL_SUSPICION_BASE - 0.05,
+                )
             player.suspicion[other.id] = _clip(value)
 
 
@@ -927,7 +1059,7 @@ def _release_fact(
         return None
     used_today = set(state.focus_by_day.get(state.day, {}).values())
     for index in _focus_order(state, player, used_today):
-        if index in player.released:
+        if index in player.released or index in player.pact_indexes:
             continue
         player.released.add(index)
         player.released_today += 1
@@ -1365,6 +1497,15 @@ def _consume_leak(state: BloodState, player: BloodPlayer) -> str:
     return f"我听{YOU_NAME}私下说「{quote}」，我没应。"
 
 
+def _add_pact_note(player: BloodPlayer, other: BloodPlayer) -> None:
+    """把廊下默契写进双方私密信息，且不占用每天可公开的私密片段。"""
+    marker = f"与{other.name}低声通过气"
+    if any(marker in text for text in player.private_info):
+        return
+    player.private_info.append(BLOOD_PACT_NOTE_TEMPLATE.format(other=other.name))
+    player.pact_indexes.add(len(player.private_info) - 1)
+
+
 def _maybe_whisper(state: BloodState) -> None:
     """每天讨论阶段随机两名 agent 私下串供：公开只留一句旁白。"""
     if state.day in state.whisper_days:
@@ -1388,6 +1529,8 @@ def _maybe_whisper(state: BloodState) -> None:
     )
     _adjust_suspicion(first, second.id, BLOOD_WHISPER_SUSPICION_DELTA)
     _adjust_suspicion(second, first.id, BLOOD_WHISPER_SUSPICION_DELTA)
+    _add_pact_note(first, second)
+    _add_pact_note(second, first)
     line = BLOOD_WHISPER_PUBLIC_TEMPLATE.format(
         a=first.name,
         b=second.name,
@@ -2434,12 +2577,13 @@ def nominate(
     state.nominated = True
     state.phase = "defense"
     state.nominee_id = target.id
+    state.defense_origin = "you"
     state.defense_speak_count = 0
     _say(
         state,
         "system",
         "旁白",
-        _gendered(f"{target.name} 被提名。先听他自辩。", target),
+        _gendered(f"{_you(state).name} 提名了 {target.name}。先听他自辩。", target),
     )
     defense = _agent_speak(
         state,
@@ -2448,7 +2592,9 @@ def nominate(
         hint="defense",
         allow_fact=BLOOD_MAX_FACTS_PER_DAY,
     )
-    state.message = f"{target.name} 被提名，先自辩，随后投票。"
+    state.message = (
+        f"{_you(state).name} 提名了 {target.name}，先自辩，随后投票。"
+    )
     _log(
         state,
         {
@@ -3229,21 +3375,30 @@ def _auto_open_day(state: BloodState) -> None:
     state.nominated = True
     state.phase = "defense"
     state.nominee_id = target.id
+    state.defense_origin = "ai"
     state.defense_speak_count = 0
-    _say(
-        state,
-        "system",
-        "旁白",
-        _gendered(f"{target.name} 被提名。先听他自辩。", target),
+    accuser = max(
+        (
+            player
+            for player in state.players
+            if player.alive and not player.is_you and player.id != target.id
+        ),
+        key=lambda player: player.suspicion.get(target.id, 0.0),
+        default=None,
     )
+    if accuser is not None:
+        line = f"{accuser.name} 把 {target.name} 推上桌。先听他自辩。"
+    else:
+        line = f"桌上把 {target.name} 推上桌。先听他自辩。"
+    _say(state, "system", "旁白", _gendered(line, target))
     if not target.is_you:
         _say(
             state,
             target.id,
             target.name,
-            DEFENSE_FALLBACKS.get(target.id, DEFENSE_FALLBACK_DEFAULT),
+            DEFENSE_FALLBACKS_AI.get(target.id, DEFENSE_FALLBACK_DEFAULT_AI),
         )
-    state.message = f"{target.name} 被提名，先自辩，随后投票。"
+    state.message = f"{target.name} 被推上桌，先自辩，随后投票。"
     _log(
         state,
         {"type": "nominate", "day": state.day, "target": target.id},
@@ -3494,6 +3649,14 @@ def _reveal_of(state: BloodState) -> RevealView | None:
     minion = _player(state, state.minion_id)
     poisoned = _player(state, state.poisoned_id)
     killed = _last_night_killed(state)
+    poisoned_note = ""
+    if poisoned is not None:
+        if state.poisoned_clue_kind:
+            poisoned_note = BLOOD_POISON_NOTE_DYNAMIC.format(
+                kind=state.poisoned_clue_kind
+            )
+        else:
+            poisoned_note = BLOOD_POISON_NOTE
     return RevealView(
         murderer_id=original.id,
         murderer_name=original.name,
@@ -3505,7 +3668,7 @@ def _reveal_of(state: BloodState) -> RevealView | None:
         minion_name=minion.name if minion is not None else "",
         poisoned_id=poisoned.id if poisoned is not None else "",
         poisoned_name=poisoned.name if poisoned is not None else "",
-        poisoned_note=BLOOD_POISON_NOTE if poisoned is not None else "",
+        poisoned_note=poisoned_note,
         killed_id=killed.id if killed is not None else "",
         killed_name=killed.name if killed is not None else "",
         succession=tuple(dict(item) for item in state.succession),

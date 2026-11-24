@@ -197,7 +197,8 @@ def test_private_info_from_facts_without_secret(script: Script) -> None:
     for seed in range(30):
         _, state, _ = _start(script, seed)
         for player in state.players:
-            assert 2 <= len(player.private_info) <= 3
+            # 初始 2–3 条，本局动态当夜线索再追加 1 条
+            assert 2 <= len(player.private_info) <= 4
             text = "".join(player.private_info)
             assert "secret" not in text
             assert "culprit" not in text
@@ -218,7 +219,7 @@ def test_suspicion_range_and_murderer_bias(script: Script) -> None:
         if other.role == "minion":
             assert murderer.suspicion[other.id] < murderer.suspicion["p0"]
             continue
-        assert murderer.suspicion[other.id] >= 0.3
+        assert murderer.suspicion[other.id] >= blood.BLOOD_INITIAL_SUSPICION_BASE
     for player in state.players:
         if player.is_you:
             continue
@@ -3475,7 +3476,12 @@ def test_api_your_result_after_you_die_and_watch_end(
 def test_reveal_separates_poisoned_and_night_kill(script: Script) -> None:
     """reveal 的被下药者与夜杀必须是两个独立字段，不许混用。"""
     store, state, _ = _start(script, 3)
-    assert state.poisoned_id == "p5"
+    victim = next(
+        player for player in state.players if player.id == state.poisoned_id
+    )
+    assert victim.role == "villager"
+    assert not victim.is_you
+    assert state.poisoned_clue_original != state.poisoned_clue_rewritten
     state.phase = "night"
     killer = next(player for player in state.players if player.id == "p1")
     killer.suspicion = {"p3": 0.9}
@@ -3484,12 +3490,12 @@ def test_reveal_separates_poisoned_and_night_kill(script: Script) -> None:
     blood._declare_winner(state, "murderer", "测试终局。")
     reveal = blood.build_view(state).reveal
     assert reveal is not None
-    assert reveal.poisoned_id == "p5"
-    assert reveal.poisoned_name == "老韩"
+    assert reveal.poisoned_id == victim.id
+    assert reveal.poisoned_name == victim.name
     assert reveal.killed_id == "p3"
     assert reveal.killed_name == "阿蘅"
     assert reveal.poisoned_id != reveal.killed_id
-    assert "信息有误" in reveal.poisoned_note
+    assert "篡改" in reveal.poisoned_note
 
 
 def test_agent_self_reference_is_rewritten(script: Script) -> None:
@@ -3564,3 +3570,141 @@ def test_minion_does_not_vote_living_demon(script: Script) -> None:
         assert result.target_id != demon.id
         return
     pytest.fail("未找到非真人爪牙的随机局")
+
+def test_dynamic_clues_pair_and_clearance(script: Script) -> None:
+    """每局两名好人镇民各拿一条当夜线索：双人排查含 1 邪恶，清白佐证指向好人。"""
+    you_clearance_seen = False
+    for seed in range(30):
+        _, state, _ = _start(script, seed)
+        dynamic = [
+            (player, text)
+            for player in state.players
+            for index, text in enumerate(player.private_info)
+            if index in player.dynamic_indexes
+        ]
+        assert len(dynamic) == 2
+        assert len({player.id for player, _ in dynamic}) == 2
+        assert all(player.role == "villager" for player, _ in dynamic)
+        evil = next(p for p in state.players if p.id == state.murderer_id)
+        good_names = {
+            p.name
+            for p in state.players
+            if p.role == "villager" and p.id != evil.id
+        }
+        pair = next(text for _, text in dynamic if "走廊拐角" in text)
+        clear = next(
+            text for _, text in dynamic if "灯一直亮到后半夜" in text
+        )
+        if state.poisoned_clue_kind == "双人排查线索":
+            pair = state.poisoned_clue_original
+        elif state.poisoned_clue_kind == "清白佐证":
+            clear = state.poisoned_clue_original
+        assert evil.name in pair
+        assert any(name in pair for name in good_names)
+        assert any(name in clear for name in good_names)
+        assert evil.name not in clear
+        you = next(p for p in state.players if p.id == blood.YOU_ID)
+        if you.role == "villager":
+            assert any(
+                "灯一直亮到后半夜" in text for text in you.private_info
+            )
+            you_clearance_seen = True
+    assert you_clearance_seen
+
+
+def test_poison_prefers_dynamic_clue(script: Script) -> None:
+    """下药优先落在 agent 镇民的当夜线索上，并留下篡改记录。"""
+    for seed in range(20):
+        _, state, _ = _start(script, seed)
+        victim = next(
+            player
+            for player in state.players
+            if player.id == state.poisoned_id
+        )
+        assert victim.role == "villager"
+        assert not victim.is_you
+        assert victim.dynamic_indexes
+        assert state.poisoned_clue_kind in {"双人排查线索", "清白佐证"}
+        assert state.poisoned_clue_original
+        assert state.poisoned_clue_rewritten
+        assert state.poisoned_clue_original != state.poisoned_clue_rewritten
+
+
+def test_whisper_writes_pact_memory(script: Script) -> None:
+    """廊下串供写入双方私密记忆，且不会作为公开事实被念出来。"""
+    store, state, reply = _start(script, 4)
+    blood.discuss(store, state.game_id, reply)
+    pair = state.whisper_days[1]
+    first = next(p for p in state.players if p.id == pair[0])
+    second = next(p for p in state.players if p.id == pair[1])
+    assert any(
+        "廊下" in text and second.name in text for text in first.private_info
+    )
+    assert any(
+        "廊下" in text and first.name in text for text in second.private_info
+    )
+    public = "".join(entry.text for entry in state.public_log)
+    for player in (first, second):
+        for index in player.pact_indexes:
+            assert player.private_info[index] not in public
+
+
+def test_ai_nomination_defense_wording(script: Script) -> None:
+    """观战推演提名时旁白写清提名者，自辩不把 AI 提名说成「你提名我」。"""
+    _, state, _ = _start(script, 5)
+    for player in state.players:
+        if player.id == blood.YOU_ID:
+            player.alive = False
+    state.phase = "spectating"
+    state.discussed = True
+    blood._auto_open_day(state)
+    assert state.defense_origin == "ai"
+    target = next(p for p in state.players if p.id == state.nominee_id)
+    assert any(
+        "推上桌" in entry.text and target.name in entry.text
+        for entry in state.public_log
+    )
+    defense_lines = [
+        entry.text
+        for entry in state.public_log
+        if entry.speaker_id == state.nominee_id
+    ]
+    assert defense_lines
+    assert all("你提名我" not in text for text in defense_lines)
+
+
+def test_defense_prompt_distinguishes_ai_nomination(script: Script) -> None:
+    """AI 提名与真人提名的自辩提示词必须分开。"""
+    _, state, _ = _start(script, 6)
+    player = next(p for p in state.players if p.id == "p1")
+    state.pending_hint = "defense"
+    state.defense_origin = "ai"
+    _, user = blood_ai.build_prompt(player, state)
+    assert "既然把我推上桌" in user
+    assert "你凭什么提名我" in user
+    state.defense_origin = "you"
+    _, user = blood_ai.build_prompt(player, state)
+    assert "正面自辩" in user
+    state.pending_hint = ""
+
+
+def test_vote_reason_prompt_forbids_misattributing_question(
+    script: Script,
+) -> None:
+    """投票理由提示词禁止把对方质问别人的话反扣成认罪。"""
+    _, state, _ = _start(script, 7)
+    player = next(p for p in state.players if p.id == "p1")
+    state.pending_hint = "vote_reason"
+    state.pending_target_id = "p2"
+    _, user = blood_ai.build_prompt(player, state)
+    assert "不得把它说成是他自己认罪" in user
+
+
+def test_fallback_line_uses_ai_defense_template(script: Script) -> None:
+    """观战期自辩兜底使用「既然把我推上桌」，不再说「你提名我」。"""
+    _, state, _ = _start(script, 8)
+    player = next(p for p in state.players if p.id == "p1")
+    state.defense_origin = "ai"
+    text = blood_ai.fallback_line(state, player, "defense")
+    assert "既然把我推上桌" in text
+    assert "你提名我" not in text
