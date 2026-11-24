@@ -25,9 +25,9 @@
   --radius-tag: 3px;
   --edge-light: rgba(255, 226, 168, 0.12);
   --edge-press: rgba(0, 0, 0, 0.6);
-  --text-body: 15px;
-  --text-name: 14px;
-  --text-note: 13px;
+  --text-body: 16px;
+  --text-name: 15px;
+  --text-note: 14.5px;
   --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong",
     "SimSun", Georgia, serif;
   --mono: "Courier New", "Songti SC", monospace;
@@ -5505,5 +5505,420 @@ button:disabled {
   .end-feedback-head {
     flex-direction: column;
     gap: 2px;
+  }
+}
+
+/* 全站字号舒适度升级：消除过小字号，提升暗色背景长读体验 */
+.kicker {
+  font-size: 13px;
+}
+
+.era {
+  font-size: 14px;
+}
+
+.chip {
+  font-size: 14px;
+}
+
+.identity-label {
+  font-size: 13px;
+}
+
+.identity-role {
+  font-size: 16.5px;
+}
+
+.identity-detail,
+.identity-mate {
+  font-size: 14.5px;
+  line-height: 1.58;
+}
+
+.hall-hint {
+  font-size: 15.5px;
+}
+
+.hall-rule {
+  font-size: 13.5px;
+}
+
+.pace-button {
+  font-size: 13px;
+  padding: 4px 12px;
+}
+
+.table-seal {
+  font-size: 16px;
+}
+
+.table-day {
+  font-size: 13.5px;
+}
+
+.table-status {
+  max-width: 260px;
+  font-size: 13px;
+}
+
+.table-wait {
+  font-size: 13px;
+  padding: 4px 12px;
+}
+
+.seat-role {
+  font-size: 13.5px;
+}
+
+.you-tag {
+  font-size: 12px;
+}
+
+.seat.selected::after {
+  font-size: 13px;
+}
+
+.seat.selectable[data-hint]::before {
+  font-size: 11.5px;
+}
+
+.speech-bubble {
+  max-width: 296px;
+  font-size: 15.5px;
+  line-height: 1.62;
+}
+
+.discussion-count,
+.log-day {
+  font-size: 13.5px;
+}
+
+.log-who {
+  font-size: 14.5px;
+}
+
+.log-entry.narration .log-who,
+.log-entry.whisper .log-who {
+  font-size: 13.5px;
+}
+
+.log-whisper-tag {
+  font-size: 12.5px;
+}
+
+.defense-kicker,
+.defense-target {
+  font-size: 13.5px;
+}
+
+.defense-speaker {
+  font-size: 15px;
+}
+
+.defense-text {
+  font-size: 15.5px;
+  line-height: 1.65;
+}
+
+.vote-title,
+.vote-threshold,
+.vote-chip,
+.vote-target,
+.vote-arrow,
+.vote-reason {
+  font-size: 14px;
+}
+
+.vote-reason-label {
+  font-size: 12px;
+}
+
+.vote-exec {
+  font-size: 14.5px;
+}
+
+.exec-stamp {
+  font-size: 13px;
+}
+
+.vote-reveal-row {
+  font-size: 13.5px;
+}
+
+.vote-reveal-reason {
+  font-size: 14px;
+}
+
+.vote-reveal-foot {
+  font-size: 13px;
+}
+
+.confide-kicker,
+.confide-count,
+.confide-label,
+.confide-stance,
+.spectate-kicker,
+.spectate-stamp,
+.ghost-kicker,
+.ghost-note,
+.ghost-stamp {
+  font-size: 13px;
+}
+
+.confide-lede,
+.confide-target,
+.confide-limit,
+.confide-reply-shift,
+.private-betray,
+.spectate-line,
+.spectate-note,
+.spectate-next,
+.spectate-day-list .log-text,
+.ghost-lede,
+.ghost-target {
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.spectate-day-summary,
+.spectate-day-list .log-who {
+  font-size: 13.5px;
+}
+
+.phase-hint {
+  font-size: 15px;
+}
+
+.hall-report {
+  font-size: 14.5px;
+}
+
+.speak-limit {
+  font-size: 13.5px;
+}
+
+.speak-form input {
+  font-size: 15.5px;
+}
+
+.ballot-kicker {
+  font-size: 12.5px;
+}
+
+.ballot-note,
+.ballot-reason span,
+.runoff-panel .ballot-note {
+  font-size: 13.5px;
+}
+
+.ballot-option,
+.ballot-reason input {
+  font-size: 14px;
+}
+
+.ballot-tag {
+  font-size: 11.5px;
+}
+
+.toast {
+  font-size: 14.5px;
+}
+
+.end-facts dt,
+.end-reveal-list dt {
+  font-size: 13.5px;
+}
+
+.end-reveal-title,
+.end-aftermath-title,
+.end-last-words-label {
+  font-size: 12.5px;
+}
+
+.ea-day {
+  font-size: 13px;
+}
+
+.ea-what {
+  font-size: 14.5px;
+}
+
+.ea-note,
+.ea-tally {
+  font-size: 13.5px;
+}
+
+.end-fatal,
+.end-last-words,
+.end-message {
+  font-size: 14.5px;
+}
+
+.rules-scroll p {
+  font-size: 15.5px;
+}
+
+.rules-scroll ul {
+  font-size: 15px;
+}
+
+.rules-tip {
+  font-size: 14px !important;
+}
+
+.feedback-stats,
+.feedback-rating-label,
+.feedback-recent-text,
+.end-feedback-done {
+  font-size: 14px;
+}
+
+.feedback-field span,
+.end-feedback-hint {
+  font-size: 13.5px;
+}
+
+.feedback-field textarea,
+.feedback-field input,
+.end-feedback-row input {
+  font-size: 14.5px;
+}
+
+.feedback-recent-title,
+.end-feedback-kicker {
+  font-size: 12.5px;
+}
+
+.feedback-recent-meta {
+  font-size: 13px;
+}
+
+.log-tab,
+.log-count,
+.log-lede,
+.log-close,
+.drawer-meta,
+.private-meta,
+.private-reply-who,
+.private-shift,
+.log-foot {
+  font-size: 13.5px;
+}
+
+@media (max-width: 900px) {
+  .identity-detail {
+    font-size: 14px;
+  }
+
+  .seat-name {
+    font-size: 14.5px;
+  }
+
+  .seat-role {
+    font-size: 13px;
+  }
+
+  .speech-bubble,
+  .speech-bubble.docked {
+    font-size: 14.5px;
+  }
+
+  .log-who {
+    font-size: 14px;
+  }
+
+  .vote-target,
+  .vote-reason,
+  .vote-chip {
+    font-size: 13.5px;
+  }
+}
+
+@media (max-width: 560px) {
+  body.blood,
+  .scene {
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  .blood-header {
+    gap: 8px;
+  }
+
+  .blood-heading {
+    flex: 1 1 100%;
+  }
+
+  .blood-actions {
+    flex: 1 1 100%;
+    margin-left: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .blood-actions .ghost-button {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 34px;
+    padding: 6px 8px;
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .seat.selectable[data-hint]::before,
+  .seat[data-hint]::before {
+    display: none !important;
+    content: none !important;
+  }
+
+  .era,
+  .chip,
+  .identity-label {
+    font-size: 13px;
+  }
+
+  .identity-detail {
+    font-size: 14px;
+  }
+
+  .seat-name {
+    font-size: 14px;
+  }
+
+  .seat-role {
+    font-size: 12.5px;
+  }
+
+  .table-status {
+    max-width: 215px;
+    font-size: 12px;
+  }
+
+  .table-wait {
+    font-size: 12px;
+  }
+
+  .pace-button {
+    padding: 3px 9px;
+    font-size: 12px;
+  }
+
+  .vote-reveal-row,
+  .vote-reveal-reason {
+    font-size: 13px;
+  }
+
+  .end-reveal-list dt,
+  .ea-day,
+  .ea-note {
+    font-size: 13px;
+  }
+
+  .end-reveal-list dd,
+  .ea-what,
+  .end-last-words,
+  .end-message {
+    font-size: 14px;
   }
 }
