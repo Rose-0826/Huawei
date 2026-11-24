@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import blood, blood_ai
+from app import blood, blood_ai, feedback
 from app.blood import (
     AdvanceOutcome,
     BloodLogEntry,
@@ -330,6 +330,46 @@ class BloodGameLogResponse(APIModel):
     entries: list[dict[str, object]]
 
 
+class BloodFeedbackRequest(APIModel):
+    """玩家评分与试玩意见。"""
+
+    rating: int = Field(ge=1, le=5)
+    comment: str = Field(default="", max_length=500)
+    nickname: str = Field(default="", max_length=24)
+    game_id: str = Field(default="", max_length=64)
+    role: str = Field(default="", max_length=24)
+    outcome: str = Field(default="", max_length=32)
+    day: int = Field(default=0, ge=0, le=99)
+
+
+class BloodFeedbackEntryPublic(APIModel):
+    """对外展示的一条试玩留言。"""
+
+    created_at: str
+    rating: int
+    comment: str
+    nickname: str
+    outcome: str = ""
+    day: int = 0
+
+
+class BloodFeedbackSummaryResponse(APIModel):
+    """玩家评分聚合摘要。"""
+
+    count: int
+    avg_rating: float
+    distribution: dict[str, int]
+    recent: list[BloodFeedbackEntryPublic]
+
+
+class BloodFeedbackSubmitResponse(APIModel):
+    """提交评分后的返回摘要。"""
+
+    ok: bool = True
+    count: int
+    avg_rating: float
+
+
 BLOOD_ERRORS: dict[str, tuple[int, str]] = {
     "game_not_found": (404, "找不到这一局"),
     "target_not_found": (404, "找不到这个投票目标"),
@@ -364,6 +404,7 @@ def create_app(
     script: Script | None = None,
     blood_store: BloodStore | None = None,
     blood_llm: LLMClient | None = None,
+    feedback_path: Path | None = None,
 ) -> FastAPI:
     """创建 FastAPI 应用，可注入剧本、内存存储与模型客户端以便测试。"""
     game_script = script or load_script(
@@ -600,6 +641,47 @@ def create_app(
         return BloodGameLogResponse(
             game_id=game_id,
             entries=blood.build_log(state),
+        )
+
+    @application.post(
+        "/blood/feedback",
+        response_model=BloodFeedbackSubmitResponse,
+    )
+    def submit_blood_feedback(
+        request: BloodFeedbackRequest,
+    ) -> BloodFeedbackSubmitResponse:
+        """记录一条真实玩家的评分与试玩建议。"""
+        summary = feedback.append_feedback(
+            rating=request.rating,
+            comment=request.comment,
+            nickname=request.nickname,
+            game_id=request.game_id,
+            role=request.role,
+            outcome=request.outcome,
+            day=request.day,
+            path=feedback_path,
+        )
+        return BloodFeedbackSubmitResponse(
+            ok=True,
+            count=summary["count"],
+            avg_rating=summary["avg_rating"],
+        )
+
+    @application.get(
+        "/blood/feedback/summary",
+        response_model=BloodFeedbackSummaryResponse,
+    )
+    def get_blood_feedback_summary() -> BloodFeedbackSummaryResponse:
+        """返回玩家评分统计与最近留言。"""
+        summary = feedback.load_feedback_summary(path=feedback_path)
+        return BloodFeedbackSummaryResponse(
+            count=summary["count"],
+            avg_rating=summary["avg_rating"],
+            distribution=summary["distribution"],
+            recent=[
+                BloodFeedbackEntryPublic(**item)
+                for item in summary["recent"]
+            ],
         )
 
     @application.get("/blood", include_in_schema=False)

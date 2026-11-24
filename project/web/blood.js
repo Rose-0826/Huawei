@@ -177,6 +177,12 @@
     nightTransitionOpen: false,
     endYourResult: "",
     endKilledInfo: null,
+    feedbackRating: 0,
+    feedbackBusy: false,
+    endFeedbackRating: 0,
+    endFeedbackGameId: "",
+    endFeedbackSubmitted: false,
+    endFeedbackBusy: false,
   };
 
   const SOUND_STORAGE_KEY = "mistvale-blood-sound";
@@ -4756,6 +4762,7 @@ state.revealInfo = info;
       }
     }
     renderEndLastWordsForm(youDead);
+    renderEndFeedback();
     overlay.classList.remove("hidden");
     overlay.setAttribute("aria-hidden", "false");
   }
@@ -5403,6 +5410,283 @@ state.revealInfo = info;
     }
   }
 
+  const FEEDBACK_LABELS = {
+    1: "1 分 · 体验不好，需要大改",
+    2: "2 分 · 还有不少瑕疵",
+    3: "3 分 · 挺有意思，中规中矩",
+    4: "4 分 · 很上头，值得推荐",
+    5: "5 分 · 绝了，再来一局",
+  };
+
+  function paintStars(containerId, score) {
+    const box = $(containerId);
+    if (!box) {
+      return;
+    }
+    box.querySelectorAll(".star-button").forEach((btn) => {
+      const value = Number(btn.dataset.score || 0);
+      const lit = value > 0 && value <= score;
+      btn.classList.toggle("is-lit", lit);
+      btn.setAttribute("aria-checked", value === score ? "true" : "false");
+    });
+  }
+
+  function renderFeedbackSummary(data) {
+    const statsEl = $("feedback-stats");
+    const wrapEl = $("feedback-recent-wrap");
+    const listEl = $("feedback-recent-list");
+    if (!statsEl || !wrapEl || !listEl || !data) {
+      return;
+    }
+    const count = Number(data.count || 0);
+    const avg = Number(data.avg_rating || 0);
+    if (count > 0) {
+      statsEl.textContent = `已有 ${count} 位旅客留评 · 均分 ${avg.toFixed(1)} / 5`;
+    } else {
+      statsEl.textContent = "还没有人留评，来做第一位打分的旅客吧。";
+    }
+    listEl.innerHTML = "";
+    const recent = Array.isArray(data.recent) ? data.recent.slice(0, 8) : [];
+    if (!recent.length) {
+      wrapEl.classList.add("hidden");
+      return;
+    }
+    for (const item of recent) {
+      const li = document.createElement("li");
+      li.className = "feedback-recent-item";
+      const meta = document.createElement("div");
+      meta.className = "feedback-recent-meta";
+      const who = document.createElement("span");
+      who.className = "feedback-recent-who";
+      const suffix = item.outcome ? ` · ${item.outcome}` : "";
+      who.textContent = `${item.nickname || "匿名旅客"}${suffix}`;
+      const stars = document.createElement("span");
+      stars.className = "feedback-recent-stars";
+      const n = Math.max(1, Math.min(5, Number(item.rating || 0)));
+      stars.textContent = "★".repeat(n) + "☆".repeat(5 - n);
+      meta.append(who, stars);
+      li.append(meta);
+      if (item.comment) {
+        const text = document.createElement("p");
+        text.className = "feedback-recent-text";
+        text.textContent = item.comment;
+        li.append(text);
+      }
+      listEl.append(li);
+    }
+    wrapEl.classList.remove("hidden");
+  }
+
+  async function loadFeedbackSummary() {
+    if (state.mock) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API}/feedback/summary`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        return;
+      }
+      const data = await res.json();
+      renderFeedbackSummary(data);
+    } catch (error) {
+      // 拉取摘要失败不打断界面
+    }
+  }
+
+  function setModalFeedbackRating(score) {
+    state.feedbackRating = score;
+    paintStars("feedback-stars", score);
+    const label = $("feedback-rating-label");
+    if (label) {
+      label.textContent = FEEDBACK_LABELS[score] || "请点选 1–5 星";
+    }
+    const submit = $("feedback-submit");
+    if (submit) {
+      submit.disabled = state.feedbackBusy || score < 1;
+    }
+  }
+
+  function setEndFeedbackRating(score) {
+    state.endFeedbackRating = score;
+    paintStars("end-feedback-stars", score);
+    const hint = $("end-feedback-hint");
+    if (hint) {
+      hint.textContent = FEEDBACK_LABELS[score] || "点一颗星，帮我们改得更好";
+    }
+    const submit = $("end-feedback-submit");
+    if (submit) {
+      submit.disabled = state.endFeedbackBusy || score < 1;
+    }
+  }
+
+  function renderEndFeedback() {
+    const section = $("end-feedback");
+    if (!section) {
+      return;
+    }
+    const currentId = state.gameId || "local";
+    if (state.endFeedbackGameId !== currentId) {
+      state.endFeedbackGameId = currentId;
+      state.endFeedbackSubmitted = false;
+      state.endFeedbackRating = 0;
+      const input = $("end-feedback-comment");
+      if (input) {
+        input.value = "";
+      }
+      setEndFeedbackRating(0);
+    }
+    const wrap = $("end-feedback-form-wrap");
+    const done = $("end-feedback-done");
+    if (wrap && done) {
+      wrap.classList.toggle("hidden", state.endFeedbackSubmitted);
+      done.classList.toggle("hidden", !state.endFeedbackSubmitted);
+    }
+  }
+
+  function currentFeedbackContext() {
+    const winner = inferredWinnerLabel() || "";
+    const role = ROLE_LABEL[youRole()] || "";
+    const day = Number((state.game && state.game.day) || 0);
+    return {
+      game_id: state.gameId || "",
+      role,
+      outcome: isFinished() ? winner : (PHASE_LABEL[currentPhase()] || ""),
+      day,
+    };
+  }
+
+  async function postFeedback(payload) {
+    const res = await fetch(`${API}/feedback`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body && body.detail) {
+          detail = typeof body.detail === "string" ? body.detail : detail;
+        }
+      } catch (error) {
+        // ignore parse error
+      }
+      throw new Error(detail);
+    }
+    return res.json();
+  }
+
+  async function handleModalFeedbackSubmit(event) {
+    event.preventDefault();
+    if (state.feedbackBusy || state.feedbackRating < 1) {
+      return;
+    }
+    const commentEl = $("feedback-comment");
+    const nickEl = $("feedback-nickname");
+    const submitEl = $("feedback-submit");
+    state.feedbackBusy = true;
+    if (submitEl) {
+      submitEl.disabled = true;
+      submitEl.textContent = "提交中…";
+    }
+    try {
+      const data = await postFeedback({
+        rating: state.feedbackRating,
+        comment: commentEl ? commentEl.value.trim() : "",
+        nickname: nickEl ? nickEl.value.trim() : "",
+        ...currentFeedbackContext(),
+      });
+      showToast(`已收到你的 ${state.feedbackRating} 星评分，谢谢反馈！`, "good", 3200);
+      if (commentEl) {
+        commentEl.value = "";
+      }
+      setModalFeedbackRating(0);
+      if (data && typeof data.count === "number") {
+        loadFeedbackSummary();
+      }
+    } catch (error) {
+      showToast(`提交失败：${error.message || "网络异常"}`, "warn", 3600);
+    } finally {
+      state.feedbackBusy = false;
+      if (submitEl) {
+        submitEl.textContent = "提交反馈";
+        submitEl.disabled = state.feedbackRating < 1;
+      }
+    }
+  }
+
+  async function handleEndFeedbackSubmit(event) {
+    event.preventDefault();
+    if (state.endFeedbackBusy || state.endFeedbackSubmitted || state.endFeedbackRating < 1) {
+      return;
+    }
+    const commentEl = $("end-feedback-comment");
+    const submitEl = $("end-feedback-submit");
+    state.endFeedbackBusy = true;
+    if (submitEl) {
+      submitEl.disabled = true;
+      submitEl.textContent = "提交中…";
+    }
+    try {
+      const data = await postFeedback({
+        rating: state.endFeedbackRating,
+        comment: commentEl ? commentEl.value.trim() : "",
+        nickname: "",
+        ...currentFeedbackContext(),
+      });
+      state.endFeedbackSubmitted = true;
+      const done = $("end-feedback-done");
+      if (done) {
+        const extra = data && data.count
+          ? `（目前共 ${data.count} 位旅客评分，均分 ${Number(data.avg_rating || 0).toFixed(1)} / 5）`
+          : "";
+        done.textContent = `已收到你的 ${state.endFeedbackRating} 星评分，谢谢试玩！${extra}`;
+      }
+      renderEndFeedback();
+      showToast("评分已收入旅馆留言簿", "good", 2800);
+    } catch (error) {
+      showToast(`提交失败：${error.message || "网络异常"}`, "warn", 3600);
+    } finally {
+      state.endFeedbackBusy = false;
+      if (submitEl) {
+        submitEl.textContent = "提交";
+        submitEl.disabled = state.endFeedbackRating < 1;
+      }
+    }
+  }
+
+  function openFeedback() {
+    const overlay = $("feedback-overlay");
+    if (!overlay) {
+      return;
+    }
+    overlay.classList.remove("hidden");
+    overlay.setAttribute("aria-hidden", "false");
+    loadFeedbackSummary();
+    const firstStar = overlay.querySelector(".star-button");
+    if (firstStar) {
+      firstStar.focus();
+    }
+  }
+
+  function closeFeedback() {
+    const overlay = $("feedback-overlay");
+    if (!overlay) {
+      return;
+    }
+    overlay.classList.add("hidden");
+    overlay.setAttribute("aria-hidden", "true");
+    const button = $("feedback-button");
+    if (button) {
+      button.focus();
+    }
+  }
+
   function bindEvents() {
     $("speak-form").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -5539,6 +5823,43 @@ state.revealInfo = info;
         closeRules();
       }
     });
+    if ($("feedback-button")) {
+      $("feedback-button").addEventListener("click", openFeedback);
+    }
+    if ($("feedback-close")) {
+      $("feedback-close").addEventListener("click", closeFeedback);
+    }
+    if ($("feedback-overlay")) {
+      $("feedback-overlay").addEventListener("click", (event) => {
+        if (event.target === event.currentTarget) {
+          closeFeedback();
+        }
+      });
+    }
+    if ($("feedback-stars")) {
+      $("feedback-stars").addEventListener("click", (event) => {
+        const btn = event.target.closest(".star-button");
+        if (!btn) {
+          return;
+        }
+        setModalFeedbackRating(Number(btn.dataset.score || 0));
+      });
+    }
+    if ($("feedback-form")) {
+      $("feedback-form").addEventListener("submit", handleModalFeedbackSubmit);
+    }
+    if ($("end-feedback-stars")) {
+      $("end-feedback-stars").addEventListener("click", (event) => {
+        const btn = event.target.closest(".star-button");
+        if (!btn) {
+          return;
+        }
+        setEndFeedbackRating(Number(btn.dataset.score || 0));
+      });
+    }
+    if ($("end-feedback-form")) {
+      $("end-feedback-form").addEventListener("submit", handleEndFeedbackSubmit);
+    }
     $("end-restart").addEventListener("click", restartGame);
     $("log-button").addEventListener("click", () => {
       if (state.drawerOpen) {
@@ -5561,6 +5882,10 @@ state.revealInfo = info;
     });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") {
+        return;
+      }
+      if ($("feedback-overlay") && !$("feedback-overlay").classList.contains("hidden")) {
+        closeFeedback();
         return;
       }
       if (!$("rules-overlay").classList.contains("hidden")) {

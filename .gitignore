@@ -14,6 +14,9 @@ venv/
 *.key
 config.local.py
 
+# 运行期收集的玩家反馈数据（服务端保留，不入库）
+project/data/feedback.jsonl
+
 # 大文件
 video/*.mp4
 video/*.mov

@@ -50,6 +50,9 @@
                 aria-haspopup="dialog" aria-controls="rules-overlay">规则</button>
         <button id="log-button" class="ghost-button" type="button"
                 aria-controls="log-drawer" aria-expanded="false">记录</button>
+        <button id="feedback-button" class="ghost-button" type="button"
+                aria-haspopup="dialog" aria-controls="feedback-overlay"
+                title="试玩评分与意见反馈">反馈</button>
         <button id="restart-button" class="ghost-button" type="button">重开</button>
       </div>
     </header>
@@ -314,6 +317,27 @@
           <button id="end-last-words-button" class="primary-button" type="submit">留下</button>
         </div>
       </form>
+      <section id="end-feedback" class="end-feedback" aria-label="本局评分">
+        <div class="end-feedback-head">
+          <span class="end-feedback-kicker">GUESTBOOK · 试玩打分</span>
+          <span id="end-feedback-hint" class="end-feedback-hint">点一颗星，帮我们改得更好</span>
+        </div>
+        <div id="end-feedback-form-wrap" class="end-feedback-body">
+          <div id="end-feedback-stars" class="feedback-stars is-compact" role="radiogroup" aria-label="本局星级评分">
+            <button class="star-button" type="button" data-score="1" aria-label="1 分">★</button>
+            <button class="star-button" type="button" data-score="2" aria-label="2 分">★</button>
+            <button class="star-button" type="button" data-score="3" aria-label="3 分">★</button>
+            <button class="star-button" type="button" data-score="4" aria-label="4 分">★</button>
+            <button class="star-button" type="button" data-score="5" aria-label="5 分">★</button>
+          </div>
+          <form id="end-feedback-form" class="end-feedback-row" autocomplete="off">
+            <input id="end-feedback-comment" type="text" maxlength="200"
+                   placeholder="哪一处最上头，或哪里想吐槽？（选填）" aria-label="本局评价">
+            <button id="end-feedback-submit" class="primary-button" type="submit" disabled>提交</button>
+          </form>
+        </div>
+        <p id="end-feedback-done" class="end-feedback-done hidden" role="status"></p>
+      </section>
       <p id="end-message" class="end-message">凶手、死者，以及每一个没说出口的谎，都留在这一夜。</p>
       </div>
       <div class="end-actions">
@@ -341,6 +365,46 @@
         <p class="rules-tip">白天讨论/自辩时点击桌上的人，可以把他的名字带进发言框，并高亮他今天的发言。</p>
       </div>
       <button id="rules-close" class="primary-button" type="button">知道了</button>
+    </div>
+  </section>
+
+  <section id="feedback-overlay" class="rules-overlay feedback-overlay hidden" role="dialog" aria-modal="true"
+           aria-labelledby="feedback-title" aria-hidden="true">
+    <div class="rules-frame feedback-frame">
+      <p class="kicker">GUESTBOOK · 旅馆留言簿</p>
+      <h2 id="feedback-title">试玩评分与意见</h2>
+      <p id="feedback-stats" class="feedback-stats">欢迎给《雾镇雪夜》打个分，任何吐槽和建议都会直接帮助我们迭代。</p>
+      <div class="feedback-scroll">
+        <form id="feedback-form" class="feedback-form" autocomplete="off">
+          <div class="feedback-rating-row">
+            <div id="feedback-stars" class="feedback-stars" role="radiogroup" aria-label="星级评分">
+              <button class="star-button" type="button" data-score="1" aria-label="1 分">★</button>
+              <button class="star-button" type="button" data-score="2" aria-label="2 分">★</button>
+              <button class="star-button" type="button" data-score="3" aria-label="3 分">★</button>
+              <button class="star-button" type="button" data-score="4" aria-label="4 分">★</button>
+              <button class="star-button" type="button" data-score="5" aria-label="5 分">★</button>
+            </div>
+            <span id="feedback-rating-label" class="feedback-rating-label">请点选 1–5 星</span>
+          </div>
+          <label class="feedback-field" for="feedback-comment">
+            <span>试玩感受 / 改进建议（选填）</span>
+            <textarea id="feedback-comment" rows="3" maxlength="500"
+                      placeholder="比如：AI 发言像不像真人、节奏快不快、手机上好不好点、有没有遇到奇怪台词……"></textarea>
+          </label>
+          <label class="feedback-field" for="feedback-nickname">
+            <span>称呼 / 论坛 ID（选填，留空则匿名）</span>
+            <input id="feedback-nickname" type="text" maxlength="24" placeholder="匿名旅客">
+          </label>
+          <div class="feedback-actions">
+            <button id="feedback-submit" class="primary-button" type="submit" disabled>提交反馈</button>
+            <button id="feedback-close" class="ghost-button" type="button">关闭</button>
+          </div>
+        </form>
+        <section id="feedback-recent-wrap" class="feedback-recent hidden" aria-label="最近玩家留言">
+          <p class="feedback-recent-title">RECENT · 旅客留评</p>
+          <ol id="feedback-recent-list" class="feedback-recent-list"></ol>
+        </section>
+      </div>
     </div>
   </section>
 
