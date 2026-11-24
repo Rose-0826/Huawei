@@ -329,10 +329,22 @@ def test_speak_triggers_agents_in_rotation(script: Script) -> None:
     store, state, reply = _start(script, 2)
     first = blood.speak(store, state.game_id, "我在走廊里听见了响动。", reply)
     second = blood.speak(store, state.game_id, "谁都不许回房。", reply)
-    assert [r.speaker_id for r in first.replies] == ["p1"]
-    assert [r.speaker_id for r in second.replies] == ["p2"]
+    assert first.replies[0].speaker_id == "p1"
+    assert second.replies[0].speaker_id == "p2"
+    assert len(first.replies) == 2
+    assert len(second.replies) == 2
     assert state.speak_count == 2
-    assert state.public_log[-2].speaker_id == "p0"
+    assert state.public_log[-3].speaker_id == "p0"
+
+
+def test_speak_second_reply_prefers_minion_for_demon(script: Script) -> None:
+    """点到恶魔时，存活爪牙优先替同伴接话打圆场。"""
+    store, state, reply = _start(script, 3)
+    _set_evil(state, "p2", "p5")
+    outcome = blood.speak(store, state.game_id, "周砚青，你昨晚在哪？", reply)
+    assert outcome.replies[0].speaker_id == "p2"
+    assert len(outcome.replies) == 2
+    assert outcome.replies[1].speaker_id == "p5"
 
 
 def test_speak_limit_three_per_day(script: Script) -> None:
@@ -413,9 +425,11 @@ def test_defense_speak_prefers_named_then_nominee(script: Script) -> None:
     _enter_defense(store, state, reply, "p1")
     named = blood.speak(store, state.game_id, "老韩，你也说两句。", reply)
     assert named.replies[0].speaker_id == "p5"
+    assert len(named.replies) == 2
     assert named.phase == "defense"
     nominee = blood.speak(store, state.game_id, "你还有什么话说？", reply)
     assert nominee.replies[0].speaker_id == "p1"
+    assert len(nominee.replies) == 2
 
 
 def test_defense_speak_limit_two_per_day(script: Script) -> None:
@@ -671,19 +685,23 @@ def test_speak_names_two_agents_in_order(script: Script) -> None:
 
 
 def test_speak_names_single_agent_only(script: Script) -> None:
-    """只点一个人时只由该人回应。"""
+    """点名一个人时，该人先答，另有一名 agent 顺势接话。"""
     store, state, reply = _start(script, 3)
     _enter_defense(store, state, reply, "p1")
     outcome = blood.speak(store, state.game_id, "阿蘅，你说。", reply)
-    assert [item.speaker_id for item in outcome.replies] == ["p3"]
+    assert outcome.replies[0].speaker_id == "p3"
+    assert len(outcome.replies) == 2
+    assert outcome.replies[1].speaker_id != "p3"
 
 
 def test_speak_without_name_returns_nominee(script: Script) -> None:
-    """质证未点名时由被提名者回应。"""
+    """质证未点名时由被提名者先回应，第二人顺势接话。"""
     store, state, reply = _start(script, 3)
     _enter_defense(store, state, reply, "p1")
     outcome = blood.speak(store, state.game_id, "你还有什么话说？", reply)
-    assert [item.speaker_id for item in outcome.replies] == ["p1"]
+    assert outcome.replies[0].speaker_id == "p1"
+    assert len(outcome.replies) == 2
+    assert outcome.replies[1].speaker_id != "p1"
 
 
 def test_private_info_never_states_secret_identity(script: Script) -> None:
@@ -1364,7 +1382,7 @@ def test_full_flow_with_testclient(api: tuple[TestClient, BloodStore]) -> None:
         json={"text": "昨晚谁上过二楼？"},
     )
     assert spoke.status_code == 200
-    assert len(spoke.json()["replies"]) == 1
+    assert len(spoke.json()["replies"]) == 2
     phases.append(spoke.json()["phase"])
 
     state = store.get(game_id)
@@ -1479,9 +1497,8 @@ def test_public_speech_filters_unregistered_names(script: Script) -> None:
 def test_traveller_hearsay_is_prefixed_not_upgraded(script: Script) -> None:
     """agent 把旅客说过的细节说成亲历时，回复要加「听旅客说」前缀。"""
     store, state, reply = _start(script, 2, FakeLLM(text="我亲眼见的23:40那串钥匙往西厢去。"))
-    blood.speak(store, state.game_id, "23:40 我看见钥匙串往西厢去了。", reply)
-    p1_reply = state.public_log[-1]
-    assert p1_reply.speaker_id == "p1"
+    outcome = blood.speak(store, state.game_id, "23:40 我看见钥匙串往西厢去了。", reply)
+    p1_reply = next(item for item in outcome.replies if item.speaker_id == "p1")
     assert p1_reply.text.startswith(blood.BLOOD_HEARSAY_PREFIX)
 
 

@@ -1453,6 +1453,35 @@ def _next_agent(state: BloodState) -> BloodPlayer | None:
     return None
 
 
+def _second_speaker(
+    state: BloodState,
+    first: BloodPlayer,
+) -> BloodPlayer | None:
+    """挑第二个顺势接话的人：优先爪牙护主，否则选最怀疑被点名者的人。"""
+    candidates = [
+        player
+        for player in _alive_agents(state)
+        if player.id != first.id
+    ]
+    if not candidates:
+        return None
+    demon = _player(state, state.murderer_id)
+    if demon is not None and demon.alive and demon.id == first.id:
+        minion = next(
+            (player for player in candidates if player.role == "minion"),
+            None,
+        )
+        if minion is not None:
+            return minion
+    candidates.sort(
+        key=lambda player: (
+            -player.suspicion.get(first.id, 0.0),
+            player.id,
+        )
+    )
+    return candidates[0]
+
+
 def _talk_precheck(state: BloodState) -> str | None:
     if state.phase == "ended":
         return "game_ended"
@@ -1554,6 +1583,24 @@ def speak(
                 allow_fact=BLOOD_MAX_FACTS_PER_DAY if hint else 1,
             )
         )
+    if len(agents) == 1 and len(_alive_agents(state)) >= 2:
+        first = agents[0]
+        second = _second_speaker(state, first)
+        if second is not None:
+            is_shield = (
+                first.id == state.murderer_id
+                and second.role == "minion"
+            )
+            replies.append(
+                _agent_speak(
+                    state,
+                    second,
+                    reply_fn,
+                    hint="shield" if is_shield else "followup",
+                    target_id=first.id,
+                    allow_fact=1,
+                )
+            )
     _log(
         state,
         {
@@ -1572,7 +1619,11 @@ def speak(
     elif state.phase == "defense":
         state.message = "质证还在继续。"
     else:
-        state.message = "话头被抛了出去，有人接了一句。"
+        state.message = (
+            "话头被两个人接住了。"
+            if len(replies) > 1
+            else "话头被抛了出去，有人接了一句。"
+        )
     return TalkOutcome(
         ok=True,
         error=None,

@@ -252,6 +252,16 @@ def build_prompt(
         )
     elif hint == "accused":
         lines.append("有人当面点了你的名，你必须正面回答或反驳，不许换话题。")
+    elif hint == "followup":
+        lines.append(
+            "你没有直接被点名，但可以顺势补一句：质疑被点名人，"
+            "或反问旅客昨晚在哪儿；只补一句，不要抢话。"
+        )
+    elif hint == "shield":
+        lines.append(
+            "被点名的是你的恶魔同伴。你要替他打圆场、转移视线，"
+            "但绝不能承认自己或他的身份，也不要把票引到自己身上。"
+        )
     elif hint == "vote_reason":
         target = next(
             (
