@@ -179,6 +179,148 @@
     endKilledInfo: null,
   };
 
+  const SOUND_STORAGE_KEY = "mistvale-blood-sound";
+  const sound = {
+    enabled: readSoundPreference(),
+    ctx: null,
+  };
+
+  function readSoundPreference() {
+    try {
+      return window.localStorage.getItem(SOUND_STORAGE_KEY) !== "off";
+    } catch (error) {
+      return true;
+    }
+  }
+
+  function audioContext() {
+    if (!sound.enabled) {
+      return null;
+    }
+    if (!sound.ctx) {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      if (!Ctor) {
+        return null;
+      }
+      try {
+        sound.ctx = new Ctor();
+      } catch (error) {
+        return null;
+      }
+    }
+    if (sound.ctx.state === "suspended") {
+      sound.ctx.resume().catch(() => {});
+    }
+    return sound.ctx;
+  }
+
+  function playTone(build) {
+    if (!sound.enabled) {
+      return;
+    }
+    const ctx = audioContext();
+    if (!ctx) {
+      return;
+    }
+    try {
+      build(ctx, ctx.currentTime);
+    } catch (error) {
+      // 音频不可用时静默，不打断对局
+    }
+  }
+
+  function playWoodTap() {
+    playTone((ctx, now) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(330, now);
+      osc.frequency.exponentialRampToValueAtTime(180, now + 0.09);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.045, now + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.13);
+    });
+  }
+
+  function playVoteChip() {
+    playTone((ctx, now) => {
+      const clicks = [
+        { freq: 560, at: 0, dur: 0.045, vol: 0.028 },
+        { freq: 240, at: 0.035, dur: 0.09, vol: 0.032 },
+      ];
+      for (const item of clicks) {
+        const start = now + item.at;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(item.freq, start);
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(item.vol, start + 0.004);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + item.dur);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + item.dur + 0.01);
+      }
+    });
+  }
+
+  function playBell() {
+    playTone((ctx, now) => {
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.0001, now);
+      master.gain.exponentialRampToValueAtTime(0.05, now + 0.02);
+      master.gain.exponentialRampToValueAtTime(0.0001, now + 1.8);
+      master.connect(ctx.destination);
+      for (const freq of [196, 294, 392]) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, now);
+        gain.gain.setValueAtTime(0.3, now);
+        osc.connect(gain).connect(master);
+        osc.start(now);
+        osc.stop(now + 1.9);
+      }
+    });
+  }
+
+  function updateSoundButton() {
+    const button = $("sound-button");
+    if (!button) {
+      return;
+    }
+    button.textContent = sound.enabled ? "音效" : "静音";
+    button.classList.toggle("muted", !sound.enabled);
+    button.setAttribute("aria-pressed", sound.enabled ? "true" : "false");
+    button.title = sound.enabled ? "关闭音效" : "开启音效";
+  }
+
+  function toggleSound() {
+    sound.enabled = !sound.enabled;
+    try {
+      window.localStorage.setItem(
+        SOUND_STORAGE_KEY,
+        sound.enabled ? "on" : "off",
+      );
+    } catch (error) {
+      // 无痕模式下不记忆，仅在本次生效
+    }
+    updateSoundButton();
+    if (sound.enabled) {
+      playWoodTap();
+    }
+  }
+
+  function unlockSound() {
+    if (!sound.enabled) {
+      return;
+    }
+    audioContext();
+  }
+
   function node(tag, className, text) {
     const el = document.createElement(tag);
     if (className) {
@@ -1551,6 +1693,7 @@ state.revealInfo = info;
     if (!player || !canSelectPlayer(player)) {
       return;
     }
+    playWoodTap();
     const phase = currentPhase();
     if (phase === "discussion") {
       mentionPlayer(playerId);
@@ -1575,7 +1718,9 @@ state.revealInfo = info;
   }
 
   function renderDayDivider(day) {
-    return node("li", "log-day", `第 ${day} 天 · 雪夜`);
+    const item = node("li", "log-day", `第 ${day} 天 · 雪夜`);
+    item.dataset.day = String(day);
+    return item;
   }
 
   function renderEntry(entry, freshIndex = -1) {
@@ -1673,8 +1818,10 @@ state.revealInfo = info;
     $("discussion-empty").classList.add("hidden");
     const day = Number(entry.day) || state.game && state.game.day || 1;
     if (day !== state.lastDayShown) {
-      list.append(renderDayDivider(day));
-      state.lastDayShown = day;
+      if (!list.querySelector(`.log-day[data-day="${day}"]`)) {
+        list.append(renderDayDivider(day));
+      }
+      state.lastDayShown = Math.max(state.lastDayShown, day);
     }
     list.append(renderEntry(entry, 0));
     if (!state.userScrolled || state.stickForce) {
@@ -1721,6 +1868,7 @@ state.revealInfo = info;
     if (!seat) {
       return;
     }
+    playWoodTap();
     window.clearInterval(state.bubbleTypeTimer);
     state.bubbleTypeTimer = 0;
     state.bubbleTyping = false;
@@ -1737,19 +1885,16 @@ state.revealInfo = info;
   }
 
   function updatePaceButton() {
-    const skip = $("pace-skip");
-    const next = $("pace-next");
+    const group = $("pace-group");
+    if (!group) {
+      return;
+    }
     const active = state.voteRevealActive
       || Boolean(state.pendingSpeechItem)
       || Boolean(state.speakingItem)
       || state.logQueue.length > 0
       || Boolean(state.logQueueTimer);
-    if (skip) {
-      skip.classList.toggle("hidden", !active);
-    }
-    if (next) {
-      next.classList.toggle("hidden", !active);
-    }
+    group.classList.toggle("hidden", !active);
   }
 
   function scheduleQueue(delay) {
@@ -1760,6 +1905,7 @@ state.revealInfo = info;
         return;
       }
       clearBubble();
+      ensureSpectateDayDivider(Number(state.game && state.game.day) || 1);
       updatePaceButton();
     }, delay);
   }
@@ -2263,12 +2409,16 @@ state.revealInfo = info;
     if (!Array.isArray(entries) || !entries.length) {
       return;
     }
+    const fallbackDay = Number(state.game && state.game.day)
+      || Number(state.spectateFeedDay) || 1;
     for (const entry of entries) {
+      const day = Number(entry.day) || fallbackDay;
+      state.spectateFeedDay = Math.max(state.spectateFeedDay, day);
       const exists = state.spectateFeed.some((item) => item.seq === entry.seq
         && item.text === entry.text
         && item.speaker_id === entry.speaker_id);
       if (!exists) {
-        state.spectateFeed.push({ ...entry });
+        state.spectateFeed.push({ ...entry, day });
       }
     }
     state.spectateFeed.sort((left, right) => (left.seq || 0) - (right.seq || 0));
@@ -2312,7 +2462,9 @@ state.revealInfo = info;
       return;
     }
     host.textContent = "";
-    const days = [...new Set(entries.map((entry) => Number(entry.day) || 1))].sort((a, b) => a - b);
+    const days = [...new Set(
+      entries.map((entry) => Number(entry.day) || state.spectateFeedDay || 1),
+    )].sort((a, b) => a - b);
     const latest = days[days.length - 1];
     for (const day of days) {
       const rows = entries.filter((entry) => (Number(entry.day) || 1) === day);
@@ -2348,6 +2500,7 @@ state.revealInfo = info;
     if (!box) {
       return;
     }
+    playBell();
     const stage = $("table-stage");
     if (stage) {
       const rect = stage.getBoundingClientRect();
@@ -2379,6 +2532,29 @@ state.revealInfo = info;
     state.nightTransitionOpen = false;
   }
 
+  function ensureSpectateDayDivider(day) {
+    if (!spectateVisible() || day <= 1) {
+      return;
+    }
+    if (state.logQueue.length || state.pendingSpeechItem || state.speakingItem) {
+      return;
+    }
+    const list = $("discussion-list");
+    if (!list) {
+      return;
+    }
+    if (list.querySelector(`.log-day[data-day="${day}"]`)) {
+      return;
+    }
+    const hasToday = [...list.querySelectorAll(".log-entry")]
+      .some((item) => Number(item.dataset.day) === day);
+    if (hasToday) {
+      return;
+    }
+    list.append(renderDayDivider(day));
+    state.lastDayShown = Math.max(state.lastDayShown, day);
+  }
+
   function renderSpectate() {
     const panel = $("spectate-panel");
     if (!panel) {
@@ -2394,7 +2570,9 @@ state.revealInfo = info;
       renderSpectateFeed();
       return;
     }
-    $("spectate-day").textContent = `第 ${state.game.day} 天`;
+    const day = Number(state.game.day) || 1;
+    $("spectate-day").textContent = `第 ${day} 天`;
+    ensureSpectateDayDivider(day);
     const line = $("spectate-line");
     if (state.ghostVoteUsed) {
       line.textContent = "你已出局。亡者票已经用过，现在只剩看。";
@@ -5329,6 +5507,13 @@ state.revealInfo = info;
     });
     $("confirm-no").addEventListener("click", closeConfirm);
     $("restart-button").addEventListener("click", restartGame);
+    $("sound-button").addEventListener("click", toggleSound);
+    updateSoundButton();
+    document.addEventListener("pointerdown", unlockSound, {
+      once: true,
+      passive: true,
+    });
+    document.addEventListener("keydown", unlockSound, { once: true });
     $("pace-next").addEventListener("click", advancePlayback);
     $("pace-skip").addEventListener("click", skipPlayback);
     $("speech-bubble").addEventListener("click", advancePlayback);
@@ -5342,7 +5527,7 @@ state.revealInfo = info;
         || tag === "BUTTON" || (target && target.isContentEditable)) {
         return;
       }
-      if (!$("pace-next").classList.contains("hidden")) {
+      if (!$("pace-group").classList.contains("hidden")) {
         event.preventDefault();
         advancePlayback();
       }
@@ -5820,6 +6005,7 @@ state.revealInfo = info;
     state.voteRevealTimer = 0;
     const total = state.voteReveal.votes.length;
     state.voteRevealIndex = Math.min(total, state.voteRevealIndex + 1);
+    playVoteChip();
     renderVoteBoard();
     renderHeader();
     updatePaceButton();
@@ -5891,6 +6077,7 @@ state.revealInfo = info;
     state.stickForce = true;
     render();
     if (reveal.executedId) {
+      playBell();
       flashExecuted(reveal.executedId);
     }
     updatePaceButton();
@@ -6543,8 +6730,91 @@ state.revealInfo = info;
     return true;
   }
 
+  function mockSpectate3() {
+    const dead = ["p0", "p2"];
+    const players = [
+      { id: "p0", name: "你", public: "封山夜最后一位住客", alive: false, is_you: true },
+      ...MOCK_AGENTS.map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        public: agent.public,
+        alive: !dead.includes(agent.id),
+        is_you: false,
+      })),
+    ];
+    const you = {
+      id: "p0",
+      name: "你",
+      role: "villager",
+      private_info: ["你已经出局，只能在廊下看。"],
+      teammates: [],
+    };
+    const log = [
+      { seq: 1, speaker_id: "__narration", speaker_name: "旁白", text: "暴雪封山，旅馆的门从外面锁死了。", day: 1 },
+      { seq: 2, speaker_id: "p1", speaker_name: "沈玉兰", text: MOCK_OPENERS.p1, day: 1 },
+      { seq: 3, speaker_id: "p3", speaker_name: "阿蘅", text: MOCK_OPENERS.p3, day: 1 },
+      { seq: 4, speaker_id: "p4", speaker_name: "陆明川", text: MOCK_OPENERS.p4, day: 1 },
+      { seq: 5, speaker_id: "__narration", speaker_name: "旁白", text: "第 2 天，周砚青 被投票处决。", day: 2 },
+      { seq: 6, speaker_id: "p1", speaker_name: "沈玉兰", text: "少了一个人，桌上的话反而更硬了。", day: 2 },
+      { seq: 7, speaker_id: "__narration", speaker_name: "旁白", text: "第 3 天，阿蘅 没有下楼。", day: 3 },
+      { seq: 8, speaker_id: "p5", speaker_name: "老韩", text: "廊下的雪盖住了脚印，可有人昨晚没回房。", day: 3 },
+    ];
+    const game = {
+      game_id: `mock-${Math.random().toString(36).slice(2, 8)}`,
+      day: 3,
+      phase: "spectating",
+      players,
+      you,
+      public_log: log,
+      dead,
+      message: "第 3 天，廊下只剩四个人。",
+      winner: null,
+      you_alive: false,
+    };
+    startGame(game);
+    state.logQueue = [];
+    state.pendingSpeechItem = null;
+    state.speakingItem = null;
+    window.clearTimeout(state.logQueueTimer);
+    state.logQueueTimer = 0;
+    $("discussion-list").textContent = "";
+    state.lastDayShown = 0;
+    for (const entry of log) {
+      commitEntry(entry);
+    }
+    state.spectateFeed = log.map((entry) => ({ ...entry }));
+    state.spectateFeedDay = 3;
+    state.lastKilledName = "阿蘅";
+    state.ghostVoteAvailable = false;
+    render();
+    updatePaceButton();
+    if (params.get("voting") === "1") {
+      state.voteReveal = {
+        day: 3,
+        threshold: 3,
+        votes: [
+          { voterId: "p1", voterName: "沈玉兰", targetId: "p4", targetName: "陆明川", reason: "他昨晚说自己一直在房里。" },
+          { voterId: "p5", voterName: "老韩", targetId: "p4", targetName: "陆明川", reason: "陆明川的袖口有一道新口子。" },
+        ],
+        finished: false,
+        executedId: "",
+        executedName: "",
+        tie: false,
+        message: "第 3 天正在落票。",
+      };
+      state.voteRevealIndex = 1;
+      state.voteRevealActive = true;
+      renderVoteRevealBoard();
+      updatePaceButton();
+    }
+  }
+
   function mockCreate() {
     if (mockEndingGame(state.mockCase)) {
+      return;
+    }
+    if (state.mockCase === "spectate3") {
+      mockSpectate3();
       return;
     }
     const forcedVillager = [

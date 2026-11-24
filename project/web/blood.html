@@ -44,6 +44,8 @@
         </div>
       </div>
       <div class="blood-actions">
+        <button id="sound-button" class="ghost-button sound-button" type="button"
+                aria-pressed="true" title="关闭音效">音效</button>
         <button id="rules-button" class="ghost-button" type="button"
                 aria-haspopup="dialog" aria-controls="rules-overlay">规则</button>
         <button id="log-button" class="ghost-button" type="button"
@@ -56,9 +58,14 @@
       <section class="hall" aria-label="旅馆大厅圆桌">
         <div class="hall-bar">
           <p id="hall-hint" class="hall-hint" aria-live="polite">雪落在大厅的窗上，六个人围桌坐下。</p>
-          <p class="hall-rule">六人围桌 · 恶魔藏在我们中间</p>
-          <button id="pace-next" class="pace-next hidden" type="button" title="播下一句（空格）">下一句</button>
-          <button id="pace-skip" class="pace-skip hidden" type="button" title="播完当前队列">跳过</button>
+          <div class="hall-side">
+            <p class="hall-rule">六人围桌 · 恶魔藏在我们中间</p>
+            <div id="pace-group" class="pace-group hidden" role="group" aria-label="播报控制">
+              <button id="pace-next" class="pace-button" type="button" title="播下一句（空格）">下一句</button>
+              <span class="pace-sep" aria-hidden="true"></span>
+              <button id="pace-skip" class="pace-button" type="button" title="播完当前队列">跳过</button>
+            </div>
+          </div>
         </div>
         <div id="table-stage" class="table-stage">
           <div class="table-surface" aria-hidden="true">
