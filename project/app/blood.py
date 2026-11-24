@@ -416,6 +416,8 @@ class BloodState:
     day_history: list[dict[str, object]] = field(default_factory=list)
     pending_hint: str = ""
     pending_target_id: str | None = None
+    pending_clash_from: str = ""
+    pending_clash_quote: str = ""
     pending_fact: dict[str, str] = field(default_factory=dict)
     confide_day: int = 0
     confide_count: int = 0
@@ -1537,15 +1539,68 @@ def _maybe_whisper(state: BloodState) -> None:
     )
     state.whisper_days[state.day] = [first.id, second.id]
     _say(state, "system", "旁白", line)
-    _log(
-        state,
-        {
-            "type": "whisper",
-            "day": state.day,
-            "pair": [first.id, second.id],
-            "trust": round(BLOOD_WHISPER_TRUST_DELTA, 2),
-        },
+    _log(state, {"type": "whisper", "day": state.day})
+
+
+CLASH_HINTS: tuple[str, ...] = ("clash_challenge", "clash_rebut")
+
+
+def _clash_candidates(
+    state: BloodState,
+    player: BloodPlayer,
+) -> list[BloodPlayer]:
+    """列出 player 可以点名互呛的存活者：避开串供同盟，爪牙不点恶魔。"""
+    candidates: list[BloodPlayer] = []
+    for other in _alive_agents(state):
+        if other.id == player.id or other.id in player.pact_ids:
+            continue
+        if player.role == "minion" and other.id == state.murderer_id:
+            continue
+        candidates.append(other)
+    return candidates
+
+
+def _clash_pair(
+    state: BloodState,
+) -> tuple[BloodPlayer, BloodPlayer] | None:
+    """挑出互呛的两人：A 最怀疑他人的存活者，B 为 A 最怀疑的合法对象。"""
+    agents = _alive_agents(state)
+    if len(agents) < 2:
+        return None
+    challenger: BloodPlayer | None = None
+    best_score = -1.0
+    for player in sorted(agents, key=lambda item: item.id):
+        candidates = _clash_candidates(state, player)
+        if not candidates:
+            continue
+        score = max(player.suspicion.get(q.id, 0.0) for q in candidates)
+        if challenger is None or score > best_score:
+            challenger = player
+            best_score = score
+    if challenger is None:
+        return None
+    candidates = _clash_candidates(state, challenger)
+    responder = min(
+        candidates,
+        key=lambda q: (-challenger.suspicion.get(q.id, 0.0), q.id),
     )
+    return challenger, responder
+
+
+def clash_fallback_line(
+    state: BloodState,
+    player: BloodPlayer,
+    hint: str,
+    target_id: str | None,
+) -> str:
+    """互呛内容被护栏丢弃时，用点名对方姓名的自然台词兜底。"""
+    if hint == "clash_challenge":
+        return (
+            f"{_name_of(state, target_id)}，你方才那番话我还想再听清楚："
+            "那会儿你到底在哪儿？"
+        )
+    source = state.pending_clash_from or "你"
+    return f"{source}，你点我的名容易。我该说的都说了，倒是你先把话说圆。"
 
 
 def _agent_speak(
@@ -1555,22 +1610,32 @@ def _agent_speak(
     hint: str = "",
     target_id: str | None = None,
     allow_fact: int = 1,
+    clash_from: str = "",
+    clash_quote: str = "",
 ) -> TalkReply:
     state.pending_hint = hint
     state.pending_target_id = target_id
+    state.pending_clash_from = clash_from
+    state.pending_clash_quote = clash_quote
     fact = _release_fact(state, player, allow_fact)
     state.pending_fact[player.id] = fact or ""
     text = ""
     try:
-        text = _sanitize_agent_line(state, player, reply_fn(state, player))
-    except Exception:  # 模型故障不打断回合，退回角色模板
-        logger.warning("agent 发言生成失败：%s", player.id, exc_info=True)
+        try:
+            text = _sanitize_agent_line(state, player, reply_fn(state, player))
+        except Exception:  # 模型故障不打断回合，退回角色模板
+            logger.warning("agent 发言生成失败：%s", player.id, exc_info=True)
+        if not text:
+            if hint in CLASH_HINTS:
+                text = clash_fallback_line(state, player, hint, target_id)
+            else:
+                text = _vague_agent_line(player)
     finally:
         state.pending_hint = ""
         state.pending_target_id = None
+        state.pending_clash_from = ""
+        state.pending_clash_quote = ""
         state.pending_fact.pop(player.id, None)
-    if not text:
-        text = _vague_agent_line(player)
     text = _clip_sentence(text, BLOOD_MAX_LINE_CHARS)
     leak = _consume_leak(state, player)
     if leak:
@@ -1640,7 +1705,7 @@ def discuss(
     game_id: str,
     reply_fn: ReplyFn,
 ) -> TalkOutcome:
-    """白天讨论：每个存活 agent 各公开发言一句，并各放出一条私密信息。"""
+    """白天讨论：每个存活 agent 各公开发言一句，随后追加一轮自主互呛。"""
     state = store.get(game_id)
     if state is None:
         return TalkOutcome(ok=False, error="game_not_found")
@@ -1653,9 +1718,35 @@ def discuss(
         return TalkOutcome(ok=False, error="discuss_used", phase=state.phase)
     state.discussed = True
     _maybe_whisper(state)
-    replies = tuple(
-        _agent_speak(state, player, reply_fn) for player in _alive_agents(state)
-    )
+    spoken = [
+        _agent_speak(state, player, reply_fn)
+        for player in _alive_agents(state)
+    ]
+    pair = _clash_pair(state)
+    if pair is not None:
+        challenger, responder = pair
+        challenge = _agent_speak(
+            state,
+            challenger,
+            reply_fn,
+            hint="clash_challenge",
+            target_id=responder.id,
+            allow_fact=0,
+        )
+        spoken.append(challenge)
+        spoken.append(
+            _agent_speak(
+                state,
+                responder,
+                reply_fn,
+                hint="clash_rebut",
+                target_id=challenger.id,
+                allow_fact=0,
+                clash_from=challenger.name,
+                clash_quote=challenge.text,
+            )
+        )
+    replies = tuple(spoken)
     _log(
         state,
         {

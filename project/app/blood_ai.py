@@ -211,11 +211,20 @@ def build_prompt(
         if other.id in player.pact_ids and other.alive
     ]
     if pact_names:
-        lines.append(
-            "你和 " + "、".join(pact_names)
-            + " 在廊下有过默契：今天先不急着互相提名；"
-            "公开场合不要把这层默契说破。"
-        )
+        joined = "、".join(pact_names)
+        if getattr(state, "pending_hint", "") == "vote_reason":
+            lines.append(
+                f"你和 {joined} 在廊下有过默契：理由只围绕被投对象，"
+                f"不要写出 {joined} 的名字，也不要把火引到 {joined} 身上；"
+                "若被投对象正是同盟，理由留有余地，但仍按牌面投票。"
+            )
+        else:
+            lines.append(
+                f"你和 {joined} 在廊下有过默契："
+                "优先替对方缓颊，或把话头引向旁人；"
+                "不主动攻击对方，也绝不公开承认这层默契。"
+            )
+            lines.append("今天先不急着互相提名；公开场合不要把这层默契说破。")
     others = [
         f"{other.name}（{other.public}）"
         for other in state.players
@@ -317,6 +326,31 @@ def build_prompt(
             lines.append(
                 f"{target_name}今天还没公开说过话，理由里不要提具体时辰、地点或动作。"
             )
+    elif hint == "clash_challenge":
+        target = next(
+            (
+                other
+                for other in state.players
+                if other.id == getattr(state, "pending_target_id", None)
+            ),
+            None,
+        )
+        target_name = _name_of(state, getattr(state, "pending_target_id", None))
+        target_public = target.public if target is not None else "在场者"
+        lines.append(
+            f"你现在最怀疑 {target_name}（{target_public}）。"
+            f"直接点名 {target_name}，质疑 {target_name} 今天说过的一句原话"
+            "或其中的疑点；只一句，不念档案，不攀扯旁人。"
+        )
+    elif hint == "clash_rebut":
+        challenger = getattr(state, "pending_clash_from", "") or "有人"
+        quote = getattr(state, "pending_clash_quote", "")
+        lines.append(
+            f"{challenger} 刚当众点了你的名，原话是：「{quote}」。"
+            "你必须正面回应或反驳，不许换话题；"
+            f"引用{challenger}的原话时不得反扣成对方认罪；"
+            "若与某人有廊下默契，可以自然撇清，但绝不说破。"
+        )
     pending = getattr(state, "pending_fact", {})
     fact = pending.get(player.id) if pending else None
     if fact:
@@ -375,6 +409,15 @@ def fallback_line(
     hint: str = "",
 ) -> str:
     """按角色模板生成一句兜底发言，被点名或自辩时给出正面回应。"""
+    if hint in {"clash_challenge", "clash_rebut"}:
+        from app.blood import clash_fallback_line
+
+        return clash_fallback_line(
+            state,
+            player,
+            hint,
+            getattr(state, "pending_target_id", None),
+        )
     if hint in {"defense", "accused"}:
         from app.blood import (
             DEFENSE_FALLBACK_DEFAULT,

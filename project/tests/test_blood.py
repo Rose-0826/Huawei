@@ -232,15 +232,22 @@ def test_discuss_makes_every_agent_speak(script: Script) -> None:
     outcome = blood.discuss(store, state.game_id, reply)
     assert outcome.ok is True
     assert outcome.phase == "discussion"
-    assert [r.speaker_id for r in outcome.replies] == [
+    assert [r.speaker_id for r in outcome.replies[:5]] == [
         "p1",
         "p2",
         "p3",
         "p4",
         "p5",
     ]
-    assert len(state.public_log) == 1 + 1 + 5
+    assert len(outcome.replies) == 7
+    clash_speakers = [r.speaker_id for r in outcome.replies[5:]]
+    assert len(set(clash_speakers)) == 2
+    assert set(clash_speakers) <= {"p1", "p2", "p3", "p4", "p5"}
+    assert len(state.public_log) == 1 + 1 + 5 + 2
     assert state.log[-1]["type"] == "discuss"
+    assert state.log[-1]["speakers"] == [
+        r.speaker_id for r in outcome.replies
+    ]
 
 
 def test_discuss_only_once_per_day(script: Script) -> None:
@@ -1119,7 +1126,8 @@ def test_ai_fallback_on_llm_failure(script: Script) -> None:
     reply = blood_ai.make_reply_fn(FakeLLM(error=True))
     outcome = blood.discuss(store, state.game_id, reply)
     assert outcome.ok is True
-    assert len(outcome.replies) == 5
+    assert len(outcome.replies) == 7
+    assert "我是凶手" not in "".join(item.text for item in outcome.replies)
     for item in outcome.replies:
         assert item.text
         assert "我是凶手" not in item.text
@@ -1492,7 +1500,9 @@ def test_public_speech_filters_unregistered_names(script: Script) -> None:
     public = "".join(entry.text for entry in state.public_log)
     assert "老周" not in public
     assert "旁人" in public
-    assert len(outcome.replies) == 5
+    assert len(outcome.replies) == 7
+    clash_text = "".join(item.text for item in outcome.replies[5:])
+    assert "老周" not in clash_text
 
 
 def test_traveller_hearsay_is_prefixed_not_upgraded(script: Script) -> None:
@@ -3708,3 +3718,209 @@ def test_fallback_line_uses_ai_defense_template(script: Script) -> None:
     text = blood_ai.fallback_line(state, player, "defense")
     assert "既然把我推上桌" in text
     assert "你提名我" not in text
+
+def test_discuss_appends_clash_pair(script: Script) -> None:
+    """全员发话后追加 A 点名质疑、B 点名反驳的 2 句并写入公开日志。"""
+    store, state, _ = _start(script, 2)
+    names = {player.id: player.name for player in state.players}
+
+    def reply(state_: BloodState, player: BloodPlayer) -> str:
+        if state_.pending_hint == "clash_challenge":
+            target = names[state_.pending_target_id]
+            return (
+                f"{target}，你方才那番话我还想再听清楚："
+                "那会儿你到底在哪儿？"
+            )
+        if state_.pending_hint == "clash_rebut":
+            return (
+                f"{state_.pending_clash_from}，你点我的名容易。"
+                "我该说的都说了，倒是你先把话说圆。"
+            )
+        return "我觉得有人还没说真话。"
+
+    outcome = blood.discuss(store, state.game_id, reply)
+    assert outcome.ok is True
+    assert [r.speaker_id for r in outcome.replies[:5]] == [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+    ]
+    assert len(outcome.replies) == 7
+    challenger = outcome.replies[5]
+    responder = outcome.replies[6]
+    assert challenger.speaker_id != responder.speaker_id
+    assert responder.speaker_id != blood.YOU_ID
+    assert names[responder.speaker_id] in challenger.text
+    assert challenger.speaker_name in responder.text
+    assert challenger.text != responder.text
+    assert state.public_log[-2].speaker_id == challenger.speaker_id
+    assert state.public_log[-2].text == challenger.text
+    assert state.public_log[-1].speaker_id == responder.speaker_id
+    assert state.public_log[-1].text == responder.text
+    assert state.log[-1]["speakers"] == [
+        r.speaker_id for r in outcome.replies
+    ]
+    assert len(state.log[-1]["speakers"]) == 7
+
+
+def test_clash_minion_never_names_demon(script: Script) -> None:
+    """爪牙作为最怀疑他人者时，互呛对象绝不能是恶魔。"""
+    store, state, _ = _start(script, 2)
+    _set_evil(state, "p2", "p1")
+    _kill(state, "p4", "p5")
+    minion = next(p for p in state.players if p.id == "p1")
+    demon = next(p for p in state.players if p.id == "p2")
+    villager = next(p for p in state.players if p.id == "p3")
+    minion.suspicion = {"p2": 0.7, "p3": 0.95}
+    demon.suspicion = {"p1": 0.4, "p3": 0.4}
+    villager.suspicion = {"p1": 0.3, "p2": 0.3}
+
+    pair = blood._clash_pair(state)
+    assert pair is not None
+    challenger, responder = pair
+    assert challenger.id == "p1"
+    assert responder.id == "p3"
+
+    llm = FakeLLM()
+    reply = blood_ai.make_reply_fn(llm)
+    outcome = blood.discuss(store, state.game_id, reply)
+    assert [r.speaker_id for r in outcome.replies[-2:]] == ["p1", "p3"]
+    assert demon.name not in outcome.replies[-2].text
+    challenge_prompt = llm.calls[-2][1]
+    assert f"你现在最怀疑 {villager.name}" in challenge_prompt
+    assert f"你现在最怀疑 {demon.name}" not in challenge_prompt
+
+
+def test_clash_lines_pass_guardrails(script: Script) -> None:
+    """互呛两条同样过护栏：第三人称改口、未登记人名过滤、自曝改走点名兜底。"""
+    store, state, _ = _start(script, 2)
+
+    def third_person_reply(state_: BloodState, player: BloodPlayer) -> str:
+        if state_.pending_hint == "clash_challenge":
+            return f"{player.name} 觉得老周可疑。"
+        if state_.pending_hint == "clash_rebut":
+            return "你点我的名容易，我该说的都说了。"
+        return "我觉得有人还没说真话。"
+
+    outcome = blood.discuss(store, state.game_id, third_person_reply)
+    challenge = outcome.replies[-2]
+    assert challenge.speaker_name not in challenge.text
+    assert "我" in challenge.text
+    assert "老周" not in challenge.text
+    assert "旁人" in challenge.text
+
+    store2, state2, _ = _start(script, 2)
+
+    def self_claim_reply(state_: BloodState, player: BloodPlayer) -> str:
+        if state_.pending_hint == "clash_challenge":
+            return "我是凶手，别问我那晚在哪儿。"
+        if state_.pending_hint == "clash_rebut":
+            return "我是好人，别再点我的名。"
+        return "我觉得有人还没说真话。"
+
+    outcome2 = blood.discuss(store2, state2.game_id, self_claim_reply)
+    challenge2 = outcome2.replies[-2]
+    rebut2 = outcome2.replies[-1]
+    assert "我是凶手" not in challenge2.text
+    assert "我是好人" not in rebut2.text
+    assert outcome2.replies[-1].speaker_name in challenge2.text
+    assert challenge2.speaker_name in rebut2.text
+
+
+def test_clash_rebuttal_prompt_quotes_challenger(script: Script) -> None:
+    """反驳者的提示词必须注入挑战者姓名与其刚才的原话。"""
+    llm = FakeLLM()
+    store, state, reply = _start(script, 2, llm)
+    outcome = blood.discuss(store, state.game_id, reply)
+    assert len(outcome.replies) == 7
+    assert len(llm.calls) == 7
+    challenger, responder = outcome.replies[-2], outcome.replies[-1]
+    challenge_prompt = llm.calls[-2][1]
+    rebut_prompt = llm.calls[-1][1]
+    assert f"你现在最怀疑 {responder.speaker_name}" in challenge_prompt
+    assert "直接点名" in challenge_prompt
+    assert f"{challenger.speaker_name} 刚当众点了你的名" in rebut_prompt
+    assert challenger.text in rebut_prompt
+    assert "不许换话题" in rebut_prompt
+    assert "绝不说破" in rebut_prompt
+
+
+def test_pact_guard_hint_in_public_and_vote_prompts(script: Script) -> None:
+    """串供同盟在公开发言与投票理由里都收到护航提示，无同盟则不注入。"""
+    _, state, _ = _start(script, 2)
+    first = next(p for p in state.players if p.id == "p1")
+    second = next(p for p in state.players if p.id == "p2")
+    first.pact_ids = {second.id}
+    second.pact_ids = {first.id}
+
+    state.pending_hint = ""
+    _, public_prompt = blood_ai.build_prompt(first, state)
+    assert f"你和 {second.name} 在廊下有过默契" in public_prompt
+    assert "优先替对方缓颊" in public_prompt
+    assert "不主动攻击对方" in public_prompt
+    assert "绝不公开承认这层默契" in public_prompt
+    assert "今天先不急着互相提名" in public_prompt
+
+    state.pending_hint = "vote_reason"
+    state.pending_target_id = "p3"
+    _, vote_prompt = blood_ai.build_prompt(first, state)
+    assert f"你和 {second.name} 在廊下有过默契" in vote_prompt
+    assert "理由只围绕被投对象" in vote_prompt
+    assert f"不要写出 {second.name} 的名字" in vote_prompt
+    assert f"也不要把火引到 {second.name} 身上" in vote_prompt
+    assert "仍按牌面投票" in vote_prompt
+    state.pending_hint = ""
+    state.pending_target_id = None
+
+    third = next(p for p in state.players if p.id == "p3")
+    third.pact_ids = set()
+    _, plain_prompt = blood_ai.build_prompt(third, state)
+    assert "廊下有过默契" not in plain_prompt
+
+
+def test_whisper_log_hides_pact_structure(script: Script) -> None:
+    """回看日志的串供条目只留类型与天数，公开视图不泄露默契结构。"""
+    store, state, reply = _start(script, 2)
+    blood.discuss(store, state.game_id, reply)
+    pair = state.whisper_days[1]
+    first = next(p for p in state.players if p.id == pair[0])
+    second = next(p for p in state.players if p.id == pair[1])
+
+    whispers = [
+        entry for entry in state.log if entry.get("type") == "whisper"
+    ]
+    assert len(whispers) == 1
+    assert set(whispers[0]) == {"step", "type", "day"}
+    assert whispers[0]["day"] == 1
+
+    log_payload = json.dumps(blood.build_log(state), ensure_ascii=False)
+    for key in ("pact_ids", "trust_map", "murderer_id", "pair"):
+        assert key not in log_payload
+    public = json.dumps(
+        [entry.text for entry in blood.build_view(state).public_log],
+        ensure_ascii=False,
+    )
+    for player in (first, second):
+        for index in player.pact_indexes:
+            assert player.private_info[index] not in public
+    assert blood.BLOOD_WHISPER_PUBLIC_TEMPLATE.format(
+        a=first.name,
+        b=second.name,
+    ) in public
+
+def test_clash_pair_returns_none_without_legal_pair(script: Script) -> None:
+    """存活不足两人或只剩互相同盟时，互呛静默跳过。"""
+    _, state, _ = _start(script, 2)
+    _kill(state, "p2", "p3", "p4", "p5")
+    assert blood._clash_pair(state) is None
+
+    _, state2, _ = _start(script, 2)
+    _set_murderer(state2, "p5")
+    _kill(state2, "p3", "p4", "p5")
+    first = next(p for p in state2.players if p.id == "p1")
+    second = next(p for p in state2.players if p.id == "p2")
+    first.pact_ids = {second.id}
+    second.pact_ids = {first.id}
+    assert blood._clash_pair(state2) is None
