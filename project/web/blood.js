@@ -33,13 +33,13 @@
     late_evil: "你出局后凶手逃脱",
   };
 
-  const LOG_THINK_MIN = 1000;
-  const LOG_THINK_MAX = 1500;
-  const LOG_TYPE_INTERVAL = 48;
-  const LOG_LINE_MIN = 1800;
-  const LOG_LINE_MAX = 2400;
-  const LOG_NARRATION_HOLD = 1500;
-  const VOTE_REVEAL_INTERVAL = 2100;
+  const LOG_THINK_MIN = 1100;
+  const LOG_THINK_MAX = 1700;
+  const LOG_TYPE_INTERVAL = 72;
+  const LOG_LINE_MIN = 2800;
+  const LOG_LINE_MAX = 3800;
+  const LOG_NARRATION_HOLD = 2400;
+  const VOTE_REVEAL_INTERVAL = 2900;
 
   const WINNER_LABEL = {
     villagers: "好人胜",
