@@ -392,14 +392,11 @@ button:disabled {
 
 .identity-detail {
   grid-column: 1 / -1;
-  display: -webkit-box;
-  overflow: hidden;
   color: var(--ink-soft);
   font-size: 13px;
   line-height: 1.5;
   letter-spacing: 0.02em;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
 }
 
 .identity-mate {
@@ -2917,12 +2914,9 @@ button:disabled {
 }
 
 .end-aftermath-list {
-  max-height: 124px;
-  overflow-y: auto;
   margin: 0;
   padding: 0;
   list-style: none;
-  scrollbar-width: thin;
 }
 
 .end-aftermath-day {
@@ -5115,7 +5109,8 @@ button:disabled {
   content: none !important;
 }
 
-.pace-skip {
+.pace-skip,
+.pace-next {
   flex: 0 0 auto;
   align-self: center;
   padding: 3px 9px;
@@ -5129,7 +5124,12 @@ button:disabled {
   cursor: pointer;
 }
 
-.pace-skip:hover {
+.pace-next {
+  margin-right: 6px;
+}
+
+.pace-skip:hover,
+.pace-next:hover {
   border-color: var(--gold-bright);
   color: var(--gold-bright);
 }
@@ -5186,7 +5186,8 @@ button:disabled {
     min-width: 140px;
   }
 
-  .pace-skip {
+  .pace-skip,
+  .pace-next {
     padding: 2px 7px;
     font-size: 10px;
   }

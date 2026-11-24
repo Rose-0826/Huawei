@@ -33,12 +33,13 @@
     late_evil: "你出局后凶手逃脱",
   };
 
-  const LOG_THINK_MIN = 600;
-  const LOG_THINK_MAX = 850;
+  const LOG_THINK_MIN = 1000;
+  const LOG_THINK_MAX = 1500;
+  const LOG_TYPE_INTERVAL = 48;
   const LOG_LINE_MIN = 1800;
-  const LOG_LINE_MAX = 3200;
-  const LOG_NARRATION_HOLD = 1200;
-  const VOTE_REVEAL_INTERVAL = 900;
+  const LOG_LINE_MAX = 2400;
+  const LOG_NARRATION_HOLD = 1500;
+  const VOTE_REVEAL_INTERVAL = 2100;
 
   const WINNER_LABEL = {
     villagers: "好人胜",
@@ -89,9 +90,12 @@
     lastSeq: 0,
     lastDayShown: 0,
     speakingId: null,
-    speakingId: null,
     speakingText: "",
     bubbleTimer: 0,
+    bubbleTypeTimer: 0,
+    bubbleTyping: false,
+    bubbleFullText: "",
+    speakingItem: null,
     lastVotes: null,
     voteResult: null,
     lastVoteResult: null,
@@ -655,6 +659,12 @@ state.mockGhostVote = null;
       state.revealInfo = null;
       state.successionPending = false;
       state.logQueue = [];
+      state.speakingItem = null;
+      state.pendingSpeechItem = null;
+      state.bubbleTyping = false;
+      state.bubbleFullText = "";
+      window.clearInterval(state.bubbleTypeTimer);
+      state.bubbleTypeTimer = 0;
       state.spectateFeed = [];
       state.spectateFeedDay = 0;
       state.endYourResult = "";
@@ -1649,12 +1659,11 @@ state.revealInfo = info;
       return LOG_NARRATION_HOLD;
     }
     const length = String(entry.text || "").length;
-    return Math.min(LOG_LINE_MAX, Math.max(LOG_LINE_MIN, 700 + length * 30));
+    return Math.min(LOG_LINE_MAX, Math.max(LOG_LINE_MIN, 900 + length * 35));
   }
 
-  function appendQueuedEntry(item) {
+  function commitEntry(entry) {
     const list = $("discussion-list");
-    const entry = item.entry;
     $("discussion-empty").classList.add("hidden");
     const day = Number(entry.day) || state.game && state.game.day || 1;
     if (day !== state.lastDayShown) {
@@ -1666,11 +1675,38 @@ state.revealInfo = info;
       state.stickForce = false;
       scrollDiscussionToBottom();
     }
+  }
+
+  function appendQueuedEntry(item) {
+    const entry = item.entry;
+    commitEntry(entry);
     if (isNarrationEntry(entry)) {
       clearBubble();
     } else {
-      showBubble(entry);
+      showBubble(entry, true);
     }
+  }
+
+  function presentEntry(item) {
+    state.speakingItem = item;
+    if (showBubble(item.entry, false)) {
+      return;
+    }
+    state.speakingItem = null;
+    commitEntry(item.entry);
+    scheduleQueue(lineHoldMs(item.entry));
+  }
+
+  function onSpeechTyped() {
+    const item = state.speakingItem;
+    state.speakingItem = null;
+    if (!item) {
+      updatePaceButton();
+      return;
+    }
+    commitEntry(item.entry);
+    scheduleQueue(lineHoldMs(item.entry));
+    updatePaceButton();
   }
 
   function showThinking(playerId) {
@@ -1679,6 +1715,10 @@ state.revealInfo = info;
     if (!seat) {
       return;
     }
+    window.clearInterval(state.bubbleTypeTimer);
+    state.bubbleTypeTimer = 0;
+    state.bubbleTyping = false;
+    state.bubbleFullText = "";
     const bubble = $("speech-bubble");
     bubble.textContent = "……";
     bubble.classList.add("thinking");
@@ -1691,15 +1731,19 @@ state.revealInfo = info;
   }
 
   function updatePaceButton() {
-    const button = $("pace-skip");
-    if (!button) {
-      return;
-    }
+    const skip = $("pace-skip");
+    const next = $("pace-next");
     const active = state.voteRevealActive
       || Boolean(state.pendingSpeechItem)
+      || Boolean(state.speakingItem)
       || state.logQueue.length > 0
       || Boolean(state.logQueueTimer);
-    button.classList.toggle("hidden", !active);
+    if (skip) {
+      skip.classList.toggle("hidden", !active);
+    }
+    if (next) {
+      next.classList.toggle("hidden", !active);
+    }
   }
 
   function scheduleQueue(delay) {
@@ -1714,17 +1758,17 @@ state.revealInfo = info;
     }, delay);
   }
 
-  function enqueueLogEntries(entries, fast = false) {
+  function enqueueLogEntries(entries) {
     if (!entries || !entries.length) {
       return;
     }
-    state.logQueue.push(...entries.map((entry) => ({ entry, fast })));
+    state.logQueue.push(...entries.map((entry) => ({ entry })));
     updatePaceButton();
     flushLogQueue();
   }
 
   function flushLogQueue() {
-    if (state.logQueueTimer || state.pendingSpeechItem) {
+    if (state.logQueueTimer || state.pendingSpeechItem || state.speakingItem) {
       return;
     }
     const item = state.logQueue.shift();
@@ -1733,11 +1777,9 @@ state.revealInfo = info;
       return;
     }
     const entry = item.entry;
-    const narration = isNarrationEntry(entry);
-    const isYou = entry.speaker_id === youId();
-    if (item.fast || isYou || narration) {
+    if (isNarrationEntry(entry) || entry.speaker_id === youId()) {
       appendQueuedEntry(item);
-      scheduleQueue(item.fast ? 30 : (isYou ? 900 : LOG_NARRATION_HOLD));
+      scheduleQueue(isNarrationEntry(entry) ? LOG_NARRATION_HOLD : 900);
       updatePaceButton();
       return;
     }
@@ -1750,8 +1792,7 @@ state.revealInfo = info;
       const pending = state.pendingSpeechItem;
       state.pendingSpeechItem = null;
       if (pending) {
-        appendQueuedEntry(pending);
-        scheduleQueue(lineHoldMs(pending.entry));
+        presentEntry(pending);
       }
       updatePaceButton();
     }, think);
@@ -1765,10 +1806,16 @@ state.revealInfo = info;
     }
     window.clearTimeout(state.logQueueTimer);
     state.logQueueTimer = 0;
+    finishBubbleTyping();
     const pending = state.pendingSpeechItem;
     state.pendingSpeechItem = null;
     if (pending) {
-      appendQueuedEntry(pending);
+      commitEntry(pending.entry);
+    }
+    const speaking = state.speakingItem;
+    state.speakingItem = null;
+    if (speaking) {
+      commitEntry(speaking.entry);
     }
     while (state.logQueue.length) {
       appendQueuedEntry(state.logQueue.shift());
@@ -1776,6 +1823,32 @@ state.revealInfo = info;
     updatePaceButton();
     window.clearTimeout(state.bubbleTimer);
     state.bubbleTimer = window.setTimeout(clearBubble, 900);
+  }
+
+  function advancePlayback() {
+    if (state.voteRevealActive) {
+      revealNextVote();
+      return;
+    }
+    if (state.pendingSpeechItem) {
+      window.clearTimeout(state.logQueueTimer);
+      state.logQueueTimer = 0;
+      const pending = state.pendingSpeechItem;
+      state.pendingSpeechItem = null;
+      presentEntry(pending);
+      updatePaceButton();
+      return;
+    }
+    window.clearTimeout(state.logQueueTimer);
+    state.logQueueTimer = 0;
+    if (state.speakingItem) {
+      finishBubbleTyping();
+      const item = state.speakingItem;
+      state.speakingItem = null;
+      commitEntry(item.entry);
+    }
+    flushLogQueue();
+    updatePaceButton();
   }
 
   function appendLogEntries() {
@@ -1787,10 +1860,9 @@ state.revealInfo = info;
       updateDiscussionCount();
       return;
     }
-    const fast = state.lastSeq === 0;
     state.lastSeq = Math.max(state.lastSeq, maxSeq(fresh));
     updateDiscussionCount();
-    enqueueLogEntries(fresh, fast);
+    enqueueLogEntries(fresh);
   }
 
   function scrollDiscussionToBottom() {
@@ -1861,11 +1933,11 @@ state.revealInfo = info;
     }
   }
 
-  function showBubble(entry) {
+  function showBubble(entry, instant = false) {
     const seatElement = [...document.querySelectorAll(".seat")]
       .find((seat) => seat.dataset.playerId === entry.speaker_id);
     if (!seatElement) {
-      return;
+      return false;
     }
     const text = entry.text.length > 96 ? `${entry.text.slice(0, 94)}…` : entry.text;
     const isNarrow = window.matchMedia("(max-width: 820px)").matches;
@@ -1880,10 +1952,9 @@ state.revealInfo = info;
       state.speakingText = "";
       updateSeatStates();
       renderActionBar();
-      return;
+      return false;
     }
     const bubble = $("speech-bubble");
-    bubble.textContent = text;
     bubble.classList.remove("thinking");
     bubble.classList.remove("hidden");
     positionBubble(seatElement);
@@ -1892,10 +1963,46 @@ state.revealInfo = info;
     updateSeatStates();
     renderActionBar();
     window.clearTimeout(state.bubbleTimer);
+    window.clearInterval(state.bubbleTypeTimer);
+    state.bubbleTypeTimer = 0;
+    state.bubbleFullText = text;
+    if (instant) {
+      bubble.textContent = text;
+      state.bubbleTyping = false;
+      return true;
+    }
+    bubble.textContent = "";
+    state.bubbleTyping = true;
+    let index = 0;
+    state.bubbleTypeTimer = window.setInterval(() => {
+      index += 1;
+      bubble.textContent = text.slice(0, index);
+      if (index >= text.length) {
+        finishBubbleTyping();
+        onSpeechTyped();
+      }
+    }, LOG_TYPE_INTERVAL);
+    return true;
+  }
+
+  function finishBubbleTyping() {
+    window.clearInterval(state.bubbleTypeTimer);
+    state.bubbleTypeTimer = 0;
+    if (state.bubbleTyping && state.bubbleFullText) {
+      const bubble = $("speech-bubble");
+      if (bubble) {
+        bubble.textContent = state.bubbleFullText;
+      }
+    }
+    state.bubbleTyping = false;
   }
 
   function clearBubble() {
     window.clearTimeout(state.bubbleTimer);
+    window.clearInterval(state.bubbleTypeTimer);
+    state.bubbleTypeTimer = 0;
+    state.bubbleTyping = false;
+    state.bubbleFullText = "";
     const bubble = $("speech-bubble");
     if (!bubble) {
       return;
@@ -4313,29 +4420,27 @@ state.revealInfo = info;
   }
 
   function revealDeathText(info) {
-    const killed = info && info.killed && info.killed.name ? info.killed.name : "";
-    const executed = info && info.executed && info.executed.name ? info.executed.name : "";
     const parts = [];
-    if (killed) {
-      parts.push(`夜杀 · ${killed}`);
-    }
-    if (executed) {
-      parts.push(`处决 · ${executed}`);
-    }
-    if (parts.length) {
-      return parts.join("；");
-    }
-    const rows = resolveAftermath();
-    const fallback = [];
-    for (const row of rows) {
-      if (row.killed && row.killed.name) {
-        fallback.push(`夜杀 · ${row.killed.name}`);
+    const seen = new Set();
+    const push = (label, person) => {
+      const name = person && person.name ? person.name : "";
+      if (!name) {
+        return;
       }
-      if (row.executed && row.executed.name) {
-        fallback.push(`处决 · ${row.executed.name}`);
+      const key = `${label}:${name}`;
+      if (seen.has(key)) {
+        return;
       }
+      seen.add(key);
+      parts.push(`${label} · ${name}`);
+    };
+    push("夜杀", info && info.killed);
+    push("处决", info && info.executed);
+    for (const row of resolveAftermath()) {
+      push("夜杀", row.killed);
+      push("处决", row.executed);
     }
-    return fallback.length ? [...new Set(fallback)].join("；") : "无";
+    return parts.length ? parts.join("；") : "无";
   }
 
   function renderEndReveal() {
@@ -5215,7 +5320,9 @@ state.revealInfo = info;
     });
     $("confirm-no").addEventListener("click", closeConfirm);
     $("restart-button").addEventListener("click", restartGame);
+    $("pace-next").addEventListener("click", advancePlayback);
     $("pace-skip").addEventListener("click", skipPlayback);
+    $("speech-bubble").addEventListener("click", advancePlayback);
     document.addEventListener("keydown", (event) => {
       if (event.code !== "Space" || event.repeat) {
         return;
@@ -5226,9 +5333,9 @@ state.revealInfo = info;
         || tag === "BUTTON" || (target && target.isContentEditable)) {
         return;
       }
-      if (!$("pace-skip").classList.contains("hidden")) {
+      if (!$("pace-next").classList.contains("hidden")) {
         event.preventDefault();
-        skipPlayback();
+        advancePlayback();
       }
     });
     $("rules-button").addEventListener("click", openRules);
@@ -5696,6 +5803,24 @@ state.revealInfo = info;
     document.body.dataset.voting = "1";
   }
 
+  function revealNextVote() {
+    if (!state.voteRevealActive || !state.voteReveal) {
+      return;
+    }
+    window.clearTimeout(state.voteRevealTimer);
+    state.voteRevealTimer = 0;
+    const total = state.voteReveal.votes.length;
+    state.voteRevealIndex = Math.min(total, state.voteRevealIndex + 1);
+    renderVoteBoard();
+    renderHeader();
+    updatePaceButton();
+    if (state.voteRevealIndex >= total) {
+      state.voteRevealTimer = window.setTimeout(finishVoteReveal, 520);
+      return;
+    }
+    state.voteRevealTimer = window.setTimeout(revealNextVote, VOTE_REVEAL_INTERVAL);
+  }
+
   function startVoteReveal() {
     if (!state.voteRevealActive) {
       return;
@@ -5709,21 +5834,7 @@ state.revealInfo = info;
       finishVoteReveal();
       return;
     }
-    const step = () => {
-      if (!state.voteRevealActive || !state.voteReveal) {
-        return;
-      }
-      state.voteRevealIndex = Math.min(total, state.voteRevealIndex + 1);
-      renderVoteBoard();
-      renderHeader();
-      updatePaceButton();
-      if (state.voteRevealIndex >= total) {
-        state.voteRevealTimer = window.setTimeout(finishVoteReveal, 520);
-        return;
-      }
-      state.voteRevealTimer = window.setTimeout(step, VOTE_REVEAL_INTERVAL);
-    };
-    state.voteRevealTimer = window.setTimeout(step, VOTE_REVEAL_INTERVAL);
+    state.voteRevealTimer = window.setTimeout(revealNextVote, VOTE_REVEAL_INTERVAL);
   }
 
   function finishVoteReveal() {
@@ -6207,6 +6318,13 @@ state.revealInfo = info;
     state.mockSpectateVotes = [];
     state.mockGhostVote = null;
     state.logQueue = [];
+    state.speakingItem = null;
+    state.pendingSpeechItem = null;
+    state.bubbleTyping = false;
+    state.bubbleFullText = "";
+    window.clearInterval(state.bubbleTypeTimer);
+    state.bubbleTypeTimer = 0;
+    window.clearTimeout(state.bubbleTimer);
     state.spectateFeed = [];
     state.spectateFeedDay = 0;
     state.endYourResult = "";
@@ -6476,6 +6594,13 @@ state.revealInfo = info;
     state.mockSpectateVotes = [];
     state.mockGhostVote = null;
     state.logQueue = [];
+    state.speakingItem = null;
+    state.pendingSpeechItem = null;
+    state.bubbleTyping = false;
+    state.bubbleFullText = "";
+    window.clearInterval(state.bubbleTypeTimer);
+    state.bubbleTypeTimer = 0;
+    window.clearTimeout(state.bubbleTimer);
     state.spectateFeed = [];
     state.spectateFeedDay = 0;
     state.endYourResult = "";
