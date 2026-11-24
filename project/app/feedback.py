@@ -15,6 +15,32 @@ DEFAULT_FEEDBACK_PATH = (
 _TZ_CN = timezone(timedelta(hours=8))
 _LOCK = threading.Lock()
 
+OUTCOME_LABELS = [
+    "白天讨论",
+    "提名投票",
+    "自辩质证",
+    "平票加赛",
+    "夜晚",
+    "廊下观战",
+    "好人胜",
+    "凶手胜",
+    "结束",
+]
+OUTCOME_ALIASES = {
+    "murderer": "凶手胜",
+    "evil": "凶手胜",
+    "good": "好人胜",
+    "villagers": "好人胜",
+}
+
+
+def normalize_outcome(value: object) -> str:
+    """把任意 outcome 值归一为白名单中文标签，无法识别时返回空串。"""
+    text = str(value or "").strip()
+    if text in OUTCOME_LABELS:
+        return text
+    return OUTCOME_ALIASES.get(text.lower(), "")
+
 
 def resolve_feedback_path(override: Path | None = None) -> Path:
     """确定反馈存储路径：显式注入优先，其次环境变量，最后默认路径。"""
@@ -48,7 +74,7 @@ def append_feedback(
         "nickname": clean_nick,
         "game_id": game_id.strip()[:64],
         "role": role.strip()[:24],
-        "outcome": outcome.strip()[:32],
+        "outcome": normalize_outcome(outcome),
         "day": max(0, min(99, int(day or 0))),
     }
     line = json.dumps(record, ensure_ascii=False)
@@ -96,7 +122,7 @@ def _read_summary_unlocked(
                     "rating": rating,
                     "comment": str(item.get("comment", "")),
                     "nickname": str(item.get("nickname", "")) or "匿名旅客",
-                    "outcome": str(item.get("outcome", "")),
+                    "outcome": normalize_outcome(item.get("outcome", "")),
                     "day": int(item.get("day", 0) or 0),
                 }
             )

@@ -5431,6 +5431,36 @@ state.revealInfo = info;
     });
   }
 
+  const OUTCOME_LABELS = [
+    "白天讨论",
+    "提名投票",
+    "自辩质证",
+    "平票加赛",
+    "夜晚",
+    "廊下观战",
+    "好人胜",
+    "凶手胜",
+    "结束",
+  ];
+
+  const OUTCOME_ALIASES = {
+    murderer: "凶手胜",
+    evil: "凶手胜",
+    good: "好人胜",
+    villagers: "好人胜",
+  };
+
+  function normalizeOutcomeLabel(raw) {
+    const text = raw === undefined || raw === null ? "" : String(raw).trim();
+    if (!text) {
+      return "";
+    }
+    if (OUTCOME_LABELS.includes(text)) {
+      return text;
+    }
+    return OUTCOME_ALIASES[text.toLowerCase()] || "";
+  }
+
   function renderFeedbackSummary(data) {
     const statsEl = $("feedback-stats");
     const wrapEl = $("feedback-recent-wrap");
@@ -5458,7 +5488,8 @@ state.revealInfo = info;
       meta.className = "feedback-recent-meta";
       const who = document.createElement("span");
       who.className = "feedback-recent-who";
-      const suffix = item.outcome ? ` · ${item.outcome}` : "";
+      const label = normalizeOutcomeLabel(item.outcome);
+      const suffix = label ? ` · ${label}` : "";
       who.textContent = `${item.nickname || "匿名旅客"}${suffix}`;
       const stars = document.createElement("span");
       stars.className = "feedback-recent-stars";
@@ -5552,7 +5583,7 @@ state.revealInfo = info;
     return {
       game_id: state.gameId || "",
       role,
-      outcome: isFinished() ? winner : (PHASE_LABEL[currentPhase()] || ""),
+      outcome: normalizeOutcomeLabel(isFinished() ? winner : (PHASE_LABEL[currentPhase()] || "")),
       day,
     };
   }

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Iterable, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -400,11 +402,15 @@ BLOOD_ERRORS: dict[str, tuple[int, str]] = {
 }
 
 
+FEEDBACK_COOLDOWN_DETAIL = "提交太快了，请稍后再试"
+
+
 def create_app(
     script: Script | None = None,
     blood_store: BloodStore | None = None,
     blood_llm: LLMClient | None = None,
     feedback_path: Path | None = None,
+    feedback_cooldown_seconds: float = 10.0,
 ) -> FastAPI:
     """创建 FastAPI 应用，可注入剧本、内存存储与模型客户端以便测试。"""
     game_script = script or load_script(
@@ -413,6 +419,8 @@ def create_app(
     blood_games = blood_store or BloodStore()
     blood_reply = blood_ai.make_reply_fn(blood_llm)
     blood_confide = blood_ai.make_confide_fn(blood_llm)
+    feedback_gate_lock = threading.Lock()
+    feedback_last_accepted: dict[str, float] = {}
     application = FastAPI(title="雾镇", version="0.1.0")
 
     @application.post(
@@ -649,8 +657,20 @@ def create_app(
     )
     def submit_blood_feedback(
         request: BloodFeedbackRequest,
+        http_request: Request,
     ) -> BloodFeedbackSubmitResponse:
-        """记录一条真实玩家的评分与试玩建议。"""
+        """记录一条真实玩家的评分与试玩建议，同 IP 冷却窗口内拒绝。"""
+        client_ip = _feedback_client_ip(http_request)
+        if feedback_cooldown_seconds > 0:
+            now = time.monotonic()
+            with feedback_gate_lock:
+                last = feedback_last_accepted.get(client_ip)
+                if last is not None and now - last < feedback_cooldown_seconds:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=FEEDBACK_COOLDOWN_DETAIL,
+                    )
+                feedback_last_accepted[client_ip] = now
         summary = feedback.append_feedback(
             rating=request.rating,
             comment=request.comment,
@@ -932,6 +952,14 @@ def _blood_advance_public(outcome: AdvanceOutcome) -> BloodAdvanceResponse:
         ghost_vote_available=outcome.ghost_vote_available,
         new_entries=_blood_log_public(outcome.new_entries),
     )
+
+
+def _feedback_client_ip(http_request: Request) -> str:
+    forwarded = http_request.headers.get("x-forwarded-for", "")
+    first = forwarded.split(",")[0].strip() if forwarded else ""
+    if first:
+        return first
+    return http_request.client.host if http_request.client else "unknown"
 
 
 def _raise_blood_error(error: str | None) -> None:
